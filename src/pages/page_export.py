@@ -100,6 +100,8 @@ def _render_docx_export(state):
                     generated_sections=state.generated_sections,
                     cost_report=state.cost_report or {},
                     output_path=xlsx_path,
+                    rag_coverage=getattr(state, "rag_coverage", None),
+                    deferred_sections=getattr(state, "deferred_sections", None),
                 )
 
                 st.success(f"Métadonnées exportées : {xlsx_path.name}")

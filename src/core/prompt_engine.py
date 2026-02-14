@@ -59,6 +59,37 @@ PLAN_GENERATION_PROMPT = """À partir de l'objectif suivant, génère un plan st
 """
 
 
+REFINEMENT_PROMPT_TEMPLATE = """## Objectif du document
+{objective}
+
+## Section à raffiner
+Titre : {section_title}
+Niveau hiérarchique : {section_level}
+{section_description}
+
+## Consignes de longueur
+{length_instruction}
+
+## Contexte des sections précédentes
+{previous_context}
+
+## Corpus source pertinent
+{corpus_content}
+
+## Brouillon actuel à améliorer
+{draft_content}
+{extra_instruction}
+## Instructions de raffinement
+Améliore le brouillon ci-dessus en :
+- Renforçant la précision et la richesse du contenu à partir du corpus source.
+- Améliorant la structure, la clarté et la fluidité du texte.
+- Corrigeant les erreurs factuelles, grammaticales ou stylistiques.
+- Respectant la longueur cible.
+- Conservant les éléments de qualité du brouillon.
+Retourne uniquement la version améliorée, sans commentaires ni explications.
+"""
+
+
 class PromptEngine:
     """Génère les prompts pour chaque étape du pipeline."""
 
@@ -76,9 +107,10 @@ class PromptEngine:
         self,
         section: PlanSection,
         plan: NormalizedPlan,
-        corpus_chunks: list[CorpusChunk],
+        corpus_chunks: list,
         previous_summaries: list[str],
         target_pages: Optional[float] = None,
+        extra_instruction: str = "",
     ) -> str:
         """Construit le prompt pour générer une section."""
         # Description de la section
@@ -108,7 +140,7 @@ class PromptEngine:
         else:
             corpus_content = "Aucun corpus source fourni. Rédige à partir de tes connaissances générales."
 
-        return SECTION_PROMPT_TEMPLATE.format(
+        prompt = SECTION_PROMPT_TEMPLATE.format(
             objective=plan.objective or plan.title or "Document professionnel",
             section_title=section.title,
             section_level=section.level,
@@ -116,6 +148,59 @@ class PromptEngine:
             length_instruction=length_instruction,
             previous_context=previous_context,
             corpus_content=corpus_content,
+        )
+        if extra_instruction:
+            prompt += f"\n\n## Consigne supplémentaire\n{extra_instruction}\n"
+        return prompt
+
+    def build_refinement_prompt(
+        self,
+        section: PlanSection,
+        plan: NormalizedPlan,
+        draft_content: str,
+        corpus_chunks: list,
+        previous_summaries: list[str],
+        target_pages: Optional[float] = None,
+        extra_instruction: str = "",
+    ) -> str:
+        """Construit le prompt de raffinement pour une section existante."""
+        description = ""
+        if section.description:
+            description = f"Description : {section.description}"
+
+        if section.page_budget:
+            length_instruction = f"Environ {section.page_budget} page(s) ({int(section.page_budget * 400)} tokens approximativement)."
+        elif target_pages:
+            length_instruction = f"Ajuste la longueur proportionnellement à la taille cible du document ({target_pages} pages)."
+        else:
+            length_instruction = "Longueur adaptée au contenu à couvrir."
+
+        previous_context = "Aucune section précédente." if not previous_summaries else "\n".join(
+            f"- {s}" for s in previous_summaries[-5:]
+        )
+
+        if corpus_chunks:
+            corpus_parts = []
+            for i, chunk in enumerate(corpus_chunks):
+                source = getattr(chunk, "source_file", "inconnu")
+                text = getattr(chunk, "text", str(chunk))
+                corpus_parts.append(f"[Source {i + 1}: {source}]\n{text}")
+            corpus_content = "\n\n---\n\n".join(corpus_parts)
+        else:
+            corpus_content = "Aucun corpus source fourni."
+
+        extra_block = f"\n## Consigne supplémentaire\n{extra_instruction}" if extra_instruction else ""
+
+        return REFINEMENT_PROMPT_TEMPLATE.format(
+            objective=plan.objective or plan.title or "Document professionnel",
+            section_title=section.title,
+            section_level=section.level,
+            section_description=description,
+            length_instruction=length_instruction,
+            previous_context=previous_context,
+            corpus_content=corpus_content,
+            draft_content=draft_content or "[Aucun brouillon disponible]",
+            extra_instruction=extra_block,
         )
 
     def build_plan_generation_prompt(

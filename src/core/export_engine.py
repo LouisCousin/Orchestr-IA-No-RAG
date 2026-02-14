@@ -372,29 +372,40 @@ class ExportEngine:
         generated_sections: dict,
         cost_report: dict,
         output_path: Path,
+        rag_coverage: Optional[dict] = None,
+        deferred_sections: Optional[list] = None,
     ) -> Path:
-        """Exporte les métadonnées du projet en Excel (Phase 2 complet, base en Phase 1)."""
+        """Exporte les métadonnées du projet en Excel (Phase 2 complet)."""
         import pandas as pd
 
         ensure_dir(output_path.parent)
 
-        # Feuille : Sections
+        # Feuille : Sections (avec couverture RAG)
         sections_data = []
         for s in plan.sections:
-            sections_data.append({
+            row = {
                 "ID": s.id,
                 "Titre": s.title,
                 "Niveau": s.level,
                 "Budget pages": s.page_budget or "",
                 "Statut": s.status,
                 "Longueur (car.)": len(generated_sections.get(s.id, "")),
-            })
+            }
+            if rag_coverage and s.id in rag_coverage:
+                cov = rag_coverage[s.id]
+                row["Couverture RAG"] = cov.get("level", "")
+                row["Score RAG moyen"] = cov.get("avg_score", 0)
+                row["Blocs pertinents"] = cov.get("num_relevant_blocks", 0)
+            if deferred_sections and s.id in deferred_sections:
+                row["Reportée"] = "Oui"
+            sections_data.append(row)
 
-        # Feuille : Coûts
+        # Feuille : Coûts (avec fournisseur)
         costs_data = []
         for entry in cost_report.get("entries", []):
             costs_data.append({
                 "Section": entry.get("section_id", ""),
+                "Fournisseur": entry.get("provider", ""),
                 "Modèle": entry.get("model", ""),
                 "Tokens input": entry.get("input_tokens", 0),
                 "Tokens output": entry.get("output_tokens", 0),
@@ -402,10 +413,36 @@ class ExportEngine:
                 "Type": entry.get("task_type", ""),
             })
 
+        # Feuille : Récapitulatif
+        recap_data = [{
+            "Tokens input totaux": cost_report.get("total_input_tokens", 0),
+            "Tokens output totaux": cost_report.get("total_output_tokens", 0),
+            "Coût total (USD)": cost_report.get("total_cost_usd", 0),
+            "Coût estimé (USD)": cost_report.get("estimated_cost_usd", 0),
+            "Sections générées": len(generated_sections),
+            "Sections totales": len(plan.sections),
+            "Sections reportées": len(deferred_sections) if deferred_sections else 0,
+        }]
+
+        # Feuille : Contenu généré (extrait par section)
+        corpus_data = []
+        for s in plan.sections:
+            content = generated_sections.get(s.id, "")
+            if content:
+                corpus_data.append({
+                    "Section ID": s.id,
+                    "Titre": s.title,
+                    "Contenu (extrait)": content[:2000] + ("..." if len(content) > 2000 else ""),
+                    "Longueur totale": len(content),
+                })
+
         with pd.ExcelWriter(str(output_path), engine="openpyxl") as writer:
+            pd.DataFrame(recap_data).to_excel(writer, sheet_name="Récapitulatif", index=False)
             pd.DataFrame(sections_data).to_excel(writer, sheet_name="Sections", index=False)
             if costs_data:
                 pd.DataFrame(costs_data).to_excel(writer, sheet_name="Coûts", index=False)
+            if corpus_data:
+                pd.DataFrame(corpus_data).to_excel(writer, sheet_name="Contenu", index=False)
 
         logger.info(f"Métadonnées exportées : {output_path}")
         return output_path

@@ -31,9 +31,13 @@ openai:
     output: 1.50
     context_window: 16385
 
-# Phase 2
+# Phase 2 — Anthropic (Claude 4.5 / Opus 4.6)
 anthropic:
-  claude-sonnet-4-20250514:
+  claude-opus-4-6:
+    input: 15.00
+    output: 75.00
+    context_window: 200000
+  claude-sonnet-4-5-20250514:
     input: 3.00
     output: 15.00
     context_window: 200000
@@ -42,13 +46,13 @@ anthropic:
     output: 4.00
     context_window: 200000
 
-# Phase 2
+# Phase 2 — Google (Gemini 3)
 google:
-  gemini-1.5-pro:
+  gemini-3.0-pro:
     input: 1.25
-    output: 5.00
-    context_window: 2000000
-  gemini-1.5-flash:
-    input: 0.075
-    output: 0.30
+    output: 10.00
+    context_window: 1000000
+  gemini-3.0-flash:
+    input: 0.10
+    output: 0.40
     context_window: 1000000

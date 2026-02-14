@@ -72,3 +72,21 @@ api_retry:
 cost_estimation:
   enabled: true
   warn_threshold_usd: 5.0
+
+# Phase 2 — RAG (Retrieval-Augmented Generation)
+rag:
+  top_k: 7
+  relevance_threshold: 0.3
+
+# Phase 2 — Génération conditionnelle
+conditional_generation:
+  enabled: true
+  sufficient_threshold: 0.5
+  insufficient_threshold: 0.3
+  min_relevant_blocks: 3
+
+# Phase 2 — Mode batch
+batch:
+  enabled: false
+  polling_interval: 30  # secondes
+  timeout: 3600  # secondes (60 minutes)

@@ -82,12 +82,18 @@ def render_sidebar():
                 done = len(state.generated_sections)
                 st.metric("Sections générées", f"{done}/{total}")
 
+        # Mode d'exécution
+        if st.session_state.project_state:
+            mode = st.session_state.project_state.config.get("mode", "manual")
+            st.markdown(f"**Mode :** {'Agentique' if mode == 'agentic' else 'Manuel'}")
+
         # Info fournisseur
         st.markdown("---")
         st.markdown("### Fournisseur IA")
         provider = st.session_state.get("provider")
         if provider and provider.is_available():
-            st.success(f"{provider.name} connecté")
+            label = {"openai": "OpenAI", "anthropic": "Anthropic", "google": "Gemini"}.get(provider.name, provider.name)
+            st.success(f"{label} connecté")
         else:
             st.warning("Non configuré")
 
