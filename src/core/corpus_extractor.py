@@ -5,6 +5,9 @@ Phase 2 : RAG avec ChromaDB.
 """
 
 import logging
+import math
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -12,6 +15,81 @@ from typing import Optional
 from src.core.text_extractor import ExtractionResult, extract
 
 logger = logging.getLogger("orchestria")
+
+# ── Extraction de mots-clés TF-IDF (sans dépendance externe) ─────────
+
+_STOP_WORDS_FR = frozenset(
+    "le la les de des du un une au aux en et est il elle on nous vous ils elles "
+    "ce cette ces son sa ses leur leurs mon ma mes ton ta tes notre votre nos vos "
+    "je tu ne pas plus par pour que qui dans sur avec se sont été être avoir fait "
+    "comme tout mais ou où dont car donc ni si très bien aussi entre autre autres "
+    "peut même ses lors sans quel quelle quels quelles ici là avant après encore "
+    "déjà puis depuis lors vers chez lors peu trop assez tel telle tels telles "
+    "chaque quelque quelques aucun aucune plusieurs certains certaines tout toute "
+    "tous toutes cette cet ces ces ceux celle celles celui dont lequel laquelle "
+    "lesquels lesquelles auquel auxquels auxquelles duquel desquels desquelles "
+    "ainsi alors comment pourquoi quand sera serait peut peuvent pourrait "
+    "faire faut deux trois sous aussi non oui".split()
+)
+
+_TOKENIZE_RE = re.compile(r"[a-zà-ÿ]{3,}", re.IGNORECASE)
+
+
+def _tokenize(text: str) -> list[str]:
+    """Tokenise un texte en mots minuscules de 3+ caractères."""
+    return [w.lower() for w in _TOKENIZE_RE.findall(text)]
+
+
+def extract_keywords_tfidf(
+    docs: dict[str, str],
+    top_k: int = 5,
+) -> dict[str, list[str]]:
+    """Extrait les mots-clés les plus distinctifs de chaque document via TF-IDF.
+
+    Implémentation légère sans dépendance externe.
+
+    Args:
+        docs: Dict ``{source_file: texte_complet}``.
+        top_k: Nombre de mots-clés à retourner par document.
+
+    Returns:
+        Dict ``{source_file: [mot1, mot2, ...]}``, trié par score TF-IDF
+        décroissant.
+    """
+    if not docs:
+        return {}
+
+    num_docs = len(docs)
+
+    # Tokeniser chaque document
+    doc_tokens: dict[str, list[str]] = {}
+    for name, text in docs.items():
+        doc_tokens[name] = [t for t in _tokenize(text) if t not in _STOP_WORDS_FR]
+
+    # Document Frequency : dans combien de docs chaque mot apparaît
+    doc_freq: Counter = Counter()
+    for tokens in doc_tokens.values():
+        doc_freq.update(set(tokens))
+
+    # Pour chaque document, calculer TF-IDF et garder les top_k
+    result: dict[str, list[str]] = {}
+    for name, tokens in doc_tokens.items():
+        if not tokens:
+            result[name] = []
+            continue
+        tf = Counter(tokens)
+        total = len(tokens)
+        scores: dict[str, float] = {}
+        for word, count in tf.items():
+            df = doc_freq[word]
+            # IDF : log(N / df) — les mots présents dans tous les docs ont un IDF faible
+            idf = math.log(num_docs / df) if df < num_docs else 0.0
+            scores[word] = (count / total) * idf
+        # Trier par score décroissant, puis alphabétiquement en cas d'égalité
+        ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+        result[name] = [word for word, score in ranked[:top_k] if score > 0]
+
+    return result
 
 
 @dataclass
@@ -67,12 +145,21 @@ class StructuredCorpus:
         num_files = len(chunks_by_file)
         sorted_files = sorted(chunks_by_file.keys())
 
+        # Extraire les mots-clés TF-IDF pour les paliers qui en bénéficient
+        keywords_by_file: dict[str, list[str]] = {}
+        if num_files > 10:
+            full_texts = {
+                f: " ".join(c.text for c in chunks_by_file[f])
+                for f in sorted_files
+            }
+            keywords_by_file = extract_keywords_tfidf(full_texts)
+
         if num_files <= 10:
             return self._digest_full_excerpts(chunks_by_file, sorted_files, max_total_chars)
         elif num_files <= 50:
-            return self._digest_first_sentences(chunks_by_file, sorted_files)
+            return self._digest_first_sentences(chunks_by_file, sorted_files, keywords_by_file)
         else:
-            return self._digest_sampled(chunks_by_file, sorted_files, max_total_chars)
+            return self._digest_sampled(chunks_by_file, sorted_files, max_total_chars, keywords_by_file)
 
     # -- Helpers internes pour get_corpus_digest --
 
@@ -128,13 +215,18 @@ class StructuredCorpus:
         self,
         chunks_by_file: dict[str, list["CorpusChunk"]],
         sorted_files: list[str],
+        keywords_by_file: dict[str, list[str]],
     ) -> dict:
-        """Palier 11-50 docs : nom du fichier + première phrase."""
+        """Palier 11-50 docs : nom du fichier + première phrase + mots-clés."""
         entries = []
         for source_file in sorted_files:
             first_chunk = chunks_by_file[source_file][0]
             sentence = self._extract_first_sentence(first_chunk.text)
-            entries.append({"source_file": source_file, "text": sentence})
+            entry: dict = {"source_file": source_file, "text": sentence}
+            kw = keywords_by_file.get(source_file, [])
+            if kw:
+                entry["keywords"] = kw
+            entries.append(entry)
         return {
             "tier": "first_sentences",
             "num_documents": len(sorted_files),
@@ -146,9 +238,10 @@ class StructuredCorpus:
         chunks_by_file: dict[str, list["CorpusChunk"]],
         sorted_files: list[str],
         max_total_chars: int,
+        keywords_by_file: dict[str, list[str]],
         sample_count: int = 5,
     ) -> dict:
-        """Palier 51+ docs : liste de fichiers + extraits pour un échantillon."""
+        """Palier 51+ docs : liste de fichiers + mots-clés + extraits pour un échantillon."""
         # Échantillonner à intervalles réguliers
         n = len(sorted_files)
         step = max(1, n // sample_count)
@@ -166,11 +259,21 @@ class StructuredCorpus:
             if excerpt:
                 entries.append({"source_file": source_file, "text": excerpt.strip()})
 
+        # Mots-clés pour TOUS les documents (pas seulement l'échantillon)
+        all_files_with_keywords = []
+        for source_file in sorted_files:
+            kw = keywords_by_file.get(source_file, [])
+            all_files_with_keywords.append({
+                "source_file": source_file,
+                "keywords": kw,
+            })
+
         return {
             "tier": "sampled",
             "num_documents": n,
             "entries": entries,
             "all_filenames": sorted_files,
+            "all_files_keywords": all_files_with_keywords,
         }
 
     def get_full_text(self) -> str:

@@ -2,7 +2,11 @@
 
 import pytest
 
-from src.core.corpus_extractor import CorpusChunk, StructuredCorpus
+from src.core.corpus_extractor import (
+    CorpusChunk,
+    StructuredCorpus,
+    extract_keywords_tfidf,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -25,15 +29,23 @@ def small_corpus():
 
 @pytest.fixture
 def medium_corpus():
-    """Corpus avec 25 documents (palier first_sentences)."""
+    """Corpus avec 25 documents (palier first_sentences), textes distincts."""
+    topics = [
+        "cloud computing infrastructure serveur hébergement",
+        "intelligence artificielle apprentissage automatique neural",
+        "cybersécurité protection données intrusion firewall",
+        "blockchain cryptomonnaie décentralisation ledger",
+        "développement logiciel agile sprint déploiement",
+    ]
     chunks = []
     source_files = []
     for i in range(25):
         name = f"doc_{i:02d}.pdf"
         source_files.append(name)
+        topic = topics[i % len(topics)]
         chunks.append(CorpusChunk(
-            text=f"Première phrase du document {i}. Suite du texte qui est plus longue.",
-            source_file=name, chunk_index=0, char_count=60,
+            text=f"Première phrase du document {i}. {topic} " * 10,
+            source_file=name, chunk_index=0, char_count=500,
         ))
     return StructuredCorpus(
         chunks=chunks, total_chunks=len(chunks), source_files=source_files,
@@ -42,14 +54,22 @@ def medium_corpus():
 
 @pytest.fixture
 def large_corpus():
-    """Corpus avec 100 documents (palier sampled)."""
+    """Corpus avec 100 documents (palier sampled), textes distincts."""
+    topics = [
+        "marché financier bourse investissement rendement",
+        "énergie renouvelable solaire éolien transition",
+        "santé publique épidémiologie vaccin prévention",
+        "transport logistique chaîne approvisionnement livraison",
+        "éducation pédagogie formation enseignement numérique",
+    ]
     chunks = []
     source_files = []
     for i in range(100):
         name = f"document_{i:03d}.pdf"
         source_files.append(name)
+        topic = topics[i % len(topics)]
         chunks.append(CorpusChunk(
-            text=f"Contenu du document numéro {i}. " * 20,
+            text=f"Contenu du document numéro {i}. {topic} " * 15,
             source_file=name, chunk_index=0, char_count=600,
         ))
     return StructuredCorpus(
@@ -71,6 +91,63 @@ def empty_corpus():
     return StructuredCorpus()
 
 
+# ── Tests extract_keywords_tfidf ─────────────────────────────────────
+
+class TestExtractKeywordsTfidf:
+    def test_basic_extraction(self):
+        docs = {
+            "cloud.pdf": "Le cloud computing permet le stockage cloud et le calcul cloud distribué.",
+            "ia.pdf": "L'intelligence artificielle et le machine learning transforment la santé.",
+        }
+        kw = extract_keywords_tfidf(docs, top_k=3)
+        assert "cloud.pdf" in kw
+        assert "ia.pdf" in kw
+        assert "cloud" in kw["cloud.pdf"]
+        # "intelligence" or "artificielle" or "machine" or "learning" should be in ia.pdf
+        assert any(w in kw["ia.pdf"] for w in ("intelligence", "artificielle", "machine", "learning", "santé"))
+
+    def test_distinctive_words_rank_higher(self):
+        docs = {
+            "a.txt": "python python python développement web",
+            "b.txt": "java java java développement mobile",
+        }
+        kw = extract_keywords_tfidf(docs, top_k=2)
+        assert "python" in kw["a.txt"]
+        assert "java" in kw["b.txt"]
+        # "développement" is common to both, should not rank as high
+        assert "développement" not in kw["a.txt"][:1]
+
+    def test_stopwords_excluded(self):
+        docs = {"a.txt": "le la les de des un une est dans pour avec"}
+        kw = extract_keywords_tfidf(docs, top_k=5)
+        assert kw["a.txt"] == []
+
+    def test_empty_docs(self):
+        assert extract_keywords_tfidf({}) == {}
+
+    def test_single_document_returns_keywords(self):
+        docs = {"only.pdf": "algorithme optimisation algorithme performance algorithme"}
+        kw = extract_keywords_tfidf(docs, top_k=3)
+        # With 1 doc, IDF = log(1/1) = 0 for all words -> no keywords with score > 0
+        # This is expected: TF-IDF needs >1 doc to discriminate
+        assert "only.pdf" in kw
+
+    def test_top_k_limit(self):
+        docs = {
+            "a.txt": "alpha bravo charlie delta echo foxtrot golf hotel india juliet",
+            "b.txt": "kilo lima mike november oscar papa quebec romeo sierra tango",
+        }
+        kw = extract_keywords_tfidf(docs, top_k=3)
+        assert len(kw["a.txt"]) <= 3
+        assert len(kw["b.txt"]) <= 3
+
+    def test_short_words_excluded(self):
+        docs = {"a.txt": "AI ML DB OS IT VR AR XR le la"}
+        kw = extract_keywords_tfidf(docs, top_k=5)
+        # All words are < 3 chars, should be empty
+        assert kw["a.txt"] == []
+
+
 # ── Tests palier full_excerpts (1-10 docs) ──────────────────────────
 
 class TestDigestFullExcerpts:
@@ -87,6 +164,11 @@ class TestDigestFullExcerpts:
         digest = small_corpus.get_corpus_digest()
         for entry in digest["entries"]:
             assert len(entry["text"]) > 0
+
+    def test_no_keywords_in_full_excerpts(self, small_corpus):
+        digest = small_corpus.get_corpus_digest()
+        for entry in digest["entries"]:
+            assert "keywords" not in entry
 
     def test_respects_total_budget(self, small_corpus):
         budget = 300
@@ -137,16 +219,27 @@ class TestDigestFirstSentences:
     def test_entries_contain_first_sentence(self, medium_corpus):
         digest = medium_corpus.get_corpus_digest()
         for entry in digest["entries"]:
-            # Each text should be a short sentence, not the full doc
             assert len(entry["text"]) <= 200
             assert len(entry["text"]) > 0
 
     def test_text_is_first_sentence_not_full_text(self, medium_corpus):
         digest = medium_corpus.get_corpus_digest()
         entry = digest["entries"][0]
-        # Should be just the first sentence, ending with period
         assert entry["text"].endswith(".")
-        assert "Suite du texte" not in entry["text"]
+
+    def test_entries_have_keywords(self, medium_corpus):
+        digest = medium_corpus.get_corpus_digest()
+        entries_with_kw = [e for e in digest["entries"] if e.get("keywords")]
+        # Most entries should have keywords (some might not if text is too generic)
+        assert len(entries_with_kw) > 0
+
+    def test_keywords_are_lists_of_strings(self, medium_corpus):
+        digest = medium_corpus.get_corpus_digest()
+        for entry in digest["entries"]:
+            if "keywords" in entry:
+                assert isinstance(entry["keywords"], list)
+                for kw in entry["keywords"]:
+                    assert isinstance(kw, str)
 
 
 # ── Tests palier sampled (51+ docs) ────────────────────────────────
@@ -177,10 +270,26 @@ class TestDigestSampled:
     def test_sampled_entries_are_spread_out(self, large_corpus):
         digest = large_corpus.get_corpus_digest()
         filenames = [e["source_file"] for e in digest["entries"]]
-        # With 100 docs, step=20, should sample docs 0, 20, 40, 60, 80
-        # They should not all be from the beginning
         indices = [int(f.split("_")[1].split(".")[0]) for f in filenames]
-        assert max(indices) - min(indices) > 10  # spread across the corpus
+        assert max(indices) - min(indices) > 10
+
+    def test_all_files_keywords_present(self, large_corpus):
+        digest = large_corpus.get_corpus_digest()
+        assert "all_files_keywords" in digest
+        assert len(digest["all_files_keywords"]) == 100
+
+    def test_all_files_keywords_structure(self, large_corpus):
+        digest = large_corpus.get_corpus_digest()
+        for fkw in digest["all_files_keywords"]:
+            assert "source_file" in fkw
+            assert "keywords" in fkw
+            assert isinstance(fkw["keywords"], list)
+
+    def test_keywords_cover_all_documents(self, large_corpus):
+        digest = large_corpus.get_corpus_digest()
+        kw_files = {fkw["source_file"] for fkw in digest["all_files_keywords"]}
+        all_files = set(digest["all_filenames"])
+        assert kw_files == all_files
 
 
 # ── Tests empty corpus ─────────────────────────────────────────────

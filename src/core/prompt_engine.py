@@ -171,7 +171,9 @@ class PromptEngine:
         elif tier == "first_sentences":
             lines = []
             for i, entry in enumerate(entries, 1):
-                lines.append(f"{i}. {entry['source_file']} — {entry['text']}")
+                kw = entry.get("keywords", [])
+                kw_str = f" [{', '.join(kw)}]" if kw else ""
+                lines.append(f"{i}. {entry['source_file']} — {entry['text']}{kw_str}")
             listing = "\n".join(lines)
             return (
                 f"\n## Documents disponibles ({num_docs} documents)\n\n"
@@ -179,15 +181,26 @@ class PromptEngine:
             )
 
         else:  # sampled
-            all_filenames = digest.get("all_filenames", [])
-            filenames_str = ", ".join(all_filenames)
+            # Liste de tous les fichiers avec mots-clés
+            all_files_kw = digest.get("all_files_keywords", [])
+            if all_files_kw:
+                file_lines = []
+                for fkw in all_files_kw:
+                    kw = fkw.get("keywords", [])
+                    kw_str = f" [{', '.join(kw)}]" if kw else ""
+                    file_lines.append(f"- {fkw['source_file']}{kw_str}")
+                files_listing = "\n".join(file_lines)
+            else:
+                all_filenames = digest.get("all_filenames", [])
+                files_listing = ", ".join(all_filenames)
+
             parts = []
             for i, entry in enumerate(entries, 1):
                 parts.append(f"[{entry['source_file']}]\n{entry['text']}")
             excerpts_text = "\n\n---\n\n".join(parts)
             return (
                 f"\n## Corpus disponible ({num_docs} documents)\n\n"
-                f"### Liste des sources\n{filenames_str}\n\n"
+                f"### Liste des sources et thématiques\n{files_listing}\n\n"
                 f"### Extraits représentatifs (échantillon de {len(entries)} documents)\n\n"
                 f"{excerpts_text}\n\n"
             )
