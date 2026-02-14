@@ -74,16 +74,18 @@ def _render_new_project():
         ensure_dir(project_dir)
         ensure_dir(project_dir / "corpus")
 
-        # Charger la configuration du profil
+        # Charger la configuration du profil (d'abord le profil, puis les choix utilisateur)
         config = st.session_state.config.copy()
-        config["target_pages"] = target_pages
-        config["objective"] = objective
 
         if selected_profile != "Aucun (configuration manuelle)":
             selected = next((p for p in profiles if p["name"] == selected_profile), None)
             if selected:
                 profile_config = profile_mgr.get_profile_config(selected["id"])
                 config.update(profile_config)
+
+        # Les choix explicites de l'utilisateur priment sur le profil
+        config["target_pages"] = target_pages
+        config["objective"] = objective
 
         # Créer l'état du projet
         state = ProjectState(

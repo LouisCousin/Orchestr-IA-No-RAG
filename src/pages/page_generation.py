@@ -34,40 +34,36 @@ def render():
         st.warning("Fournisseur IA non configuré. Rendez-vous sur la page Configuration.")
         return
 
-    tab_launch, tab_progress, tab_review = st.tabs([
-        "Lancement", "Progression", "Relecture"
-    ])
+    _render_launch_and_progress(state, provider)
 
-    with tab_launch:
-        _render_launch(state, provider)
-
-    with tab_progress:
-        _render_progress(state)
-
-    with tab_review:
+    # Section relecture (visible si des sections sont générées)
+    if state.generated_sections:
+        st.markdown("---")
         _render_review(state)
 
 
-def _render_launch(state, provider):
-    """Interface de lancement de la génération."""
-    st.subheader("Paramètres de génération")
-
+def _render_launch_and_progress(state, provider):
+    """Interface de lancement et suivi de la génération."""
     plan = state.plan
     config = state.config
 
-    # Résumé avant lancement
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Sections", len(plan.sections))
-    col2.metric("Modèle", config.get("model", "gpt-4o"))
-    col3.metric("Pages cibles", config.get("target_pages") or "Auto")
+    # Métriques d'état
+    total_sections = len(plan.sections)
+    already_generated = len(state.generated_sections)
+    failed = sum(1 for s in plan.sections if s.status == "failed")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Sections", total_sections)
+    col2.metric("Générées", already_generated)
+    col3.metric("Modèle", config.get("model", "gpt-4o"))
+    col4.metric("Pages cibles", config.get("target_pages") or "Auto")
+
+    if total_sections > 0:
+        st.progress(already_generated / total_sections, text=f"{already_generated}/{total_sections} sections")
 
     # Estimation des coûts
-    st.markdown("---")
-    st.subheader("Estimation des coûts")
-
     tracker = st.session_state.get("cost_tracker") or CostTracker()
 
-    # Analyser le corpus si disponible
     project_id = st.session_state.current_project
     corpus_dir = PROJECTS_DIR / project_id / "corpus"
     avg_corpus_tokens = 2000
@@ -77,11 +73,10 @@ def _render_launch(state, provider):
         corpus = extractor.extract_corpus(corpus_dir)
         state.corpus = corpus
         if corpus.total_chunks > 0:
-            avg_corpus_tokens = corpus.total_tokens // max(1, len(plan.sections))
-            st.info(f"Corpus : {corpus.total_chunks} blocs, ~{corpus.total_tokens:,} tokens")
+            avg_corpus_tokens = corpus.total_tokens // max(1, total_sections)
 
     estimate = tracker.estimate_project_cost(
-        section_count=len(plan.sections),
+        section_count=total_sections,
         avg_corpus_tokens=avg_corpus_tokens,
         provider=config.get("default_provider", "openai"),
         model=config.get("model", "gpt-4o"),
@@ -89,28 +84,44 @@ def _render_launch(state, provider):
     )
 
     if "error" not in estimate:
+        st.markdown("---")
         col1, col2, col3 = st.columns(3)
         col1.metric("Coût estimé", f"${estimate['estimated_cost_usd']:.4f}")
         col2.metric("Tokens input estimés", f"{estimate['estimated_input_tokens']:,}")
         col3.metric("Tokens output estimés", f"{estimate['estimated_output_tokens']:,}")
 
-    # Bouton de lancement
-    st.markdown("---")
+    # Coûts réels (si génération en cours/terminée)
+    cost_report = state.cost_report
+    if cost_report and cost_report.get("total_cost_usd", 0) > 0:
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Tokens input réels", f"{cost_report.get('total_input_tokens', 0):,}")
+        col2.metric("Tokens output réels", f"{cost_report.get('total_output_tokens', 0):,}")
+        col3.metric("Coût réel", f"${cost_report.get('total_cost_usd', 0):.4f}")
 
-    already_generated = len(state.generated_sections)
-    total_sections = len(plan.sections)
+    # Actions
+    st.markdown("---")
 
     if already_generated > 0 and already_generated < total_sections:
         st.info(f"{already_generated}/{total_sections} sections déjà générées. La génération reprendra là où elle s'est arrêtée.")
 
-    if st.button("Lancer la génération", type="primary", use_container_width=True, disabled=(already_generated == total_sections)):
-        _run_generation(state, provider, tracker)
-
     if already_generated == total_sections:
         st.success("Toutes les sections ont été générées !")
-        if st.button("Passer à l'export →", type="primary", use_container_width=True):
+        if st.button("Passer à l'export", type="primary", use_container_width=True):
             st.session_state.current_page = "export"
             st.rerun()
+    else:
+        if st.button("Lancer la génération", type="primary", use_container_width=True):
+            _run_generation(state, provider, tracker)
+
+    # Journal d'activité
+    with st.expander("Journal d'activité"):
+        logs = st.session_state.activity_log.get_recent(20)
+        if logs:
+            for log in reversed(logs):
+                icon = {"info": "i", "warning": "!", "error": "x", "success": "v"}.get(log["level"], "i")
+                st.text(f"[{icon}] [{log['timestamp'][11:19]}] {log['message']}")
+        else:
+            st.info("Aucune activité enregistrée.")
 
 
 def _run_generation(state, provider, tracker):
@@ -221,56 +232,9 @@ def _run_generation(state, provider, tracker):
     save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
 
 
-def _render_progress(state):
-    """Affiche la progression et les métriques."""
-    st.subheader("Progression")
-
-    plan = state.plan
-    if not plan:
-        return
-
-    total = len(plan.sections)
-    done = len(state.generated_sections)
-    failed = sum(1 for s in plan.sections if s.status == "failed")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total sections", total)
-    col2.metric("Générées", done)
-    col3.metric("En attente", total - done - failed)
-    col4.metric("Échouées", failed)
-
-    if total > 0:
-        st.progress(done / total, text=f"{done}/{total} sections")
-
-    # Coûts en temps réel
-    cost_report = state.cost_report
-    if cost_report:
-        st.markdown("---")
-        st.subheader("Coûts")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Tokens input", f"{cost_report.get('total_input_tokens', 0):,}")
-        col2.metric("Tokens output", f"{cost_report.get('total_output_tokens', 0):,}")
-        col3.metric("Coût total", f"${cost_report.get('total_cost_usd', 0):.4f}")
-
-    # Journal d'activité
-    st.markdown("---")
-    st.subheader("Journal d'activité")
-    logs = st.session_state.activity_log.get_recent(20)
-    if logs:
-        for log in reversed(logs):
-            icon = {"info": "ℹ️", "warning": "⚠️", "error": "❌", "success": "✅"}.get(log["level"], "ℹ️")
-            st.text(f"{icon} [{log['timestamp'][11:19]}] {log['message']}")
-    else:
-        st.info("Aucune activité enregistrée.")
-
-
 def _render_review(state):
     """Relecture des sections générées."""
     st.subheader("Relecture des sections")
-
-    if not state.generated_sections:
-        st.info("Aucune section générée.")
-        return
 
     plan = state.plan
     for section in plan.sections:
@@ -296,7 +260,7 @@ def _render_review(state):
 
     # Passage à l'export
     st.markdown("---")
-    if st.button("Passer à l'export →", type="primary", use_container_width=True):
+    if st.button("Passer à l'export", type="primary", use_container_width=True):
         state.current_step = "export"
         project_id = st.session_state.current_project
         save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())

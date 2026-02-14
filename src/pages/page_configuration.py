@@ -16,20 +16,15 @@ def render():
         st.warning("Aucun projet actif. Créez ou ouvrez un projet depuis la page Accueil.")
         return
 
-    tab_api, tab_model, tab_checkpoints, tab_styling = st.tabs([
-        "Clé API", "Modèle IA", "Checkpoints", "Charte graphique"
-    ])
+    _render_api_config()
+    st.markdown("---")
+    _render_model_config()
+    st.markdown("---")
 
-    with tab_api:
-        _render_api_config()
-
-    with tab_model:
-        _render_model_config()
-
-    with tab_checkpoints:
+    with st.expander("Points de controle (HITL)", expanded=False):
         _render_checkpoint_config()
 
-    with tab_styling:
+    with st.expander("Charte graphique", expanded=False):
         _render_styling_config()
 
 
@@ -98,45 +93,16 @@ def _render_model_config():
             step=512,
         )
 
-    target_pages = st.number_input(
-        "Taille cible (pages)", 1, 500,
-        value=config.get("target_pages") or 10,
-    )
-
     if st.button("Sauvegarder la configuration du modèle"):
         config["model"] = model
         config["temperature"] = temperature
         config["max_tokens"] = max_tokens
-        config["target_pages"] = target_pages
         st.session_state.project_state.config = config
         st.success("Configuration sauvegardée.")
-
-    # Estimation de coûts multi-modèle
-    st.markdown("---")
-    st.subheader("Estimation comparative des coûts")
-    if st.session_state.project_state.plan:
-        section_count = len(st.session_state.project_state.plan.sections)
-    else:
-        section_count = st.number_input("Nombre de sections estimé", 1, 100, value=10)
-
-    avg_corpus_tokens = st.number_input("Tokens moyens de corpus par section", 100, 50000, value=2000)
-
-    if st.button("Calculer les estimations"):
-        tracker = CostTracker()
-        estimates = tracker.estimate_multi_model(section_count, avg_corpus_tokens)
-        if estimates:
-            import pandas as pd
-            df = pd.DataFrame(estimates)
-            df = df[["provider", "model", "estimated_input_tokens", "estimated_output_tokens", "estimated_cost_usd", "context_window"]]
-            df.columns = ["Fournisseur", "Modèle", "Tokens input", "Tokens output", "Coût estimé (USD)", "Fenêtre contexte"]
-            st.dataframe(df, use_container_width=True, hide_index=True)
-        else:
-            st.warning("Aucun modèle configuré.")
 
 
 def _render_checkpoint_config():
     """Configuration des checkpoints HITL."""
-    st.subheader("Points de contrôle (HITL)")
     st.markdown("Activez les étapes où vous souhaitez valider manuellement le résultat.")
 
     config = st.session_state.project_state.config
@@ -164,8 +130,6 @@ def _render_checkpoint_config():
 
 def _render_styling_config():
     """Configuration de la charte graphique."""
-    st.subheader("Charte graphique du document")
-
     config = st.session_state.project_state.config
     styling = config.get("styling", {})
 

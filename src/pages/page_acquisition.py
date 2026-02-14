@@ -27,23 +27,23 @@ def render():
     corpus_dir = PROJECTS_DIR / project_id / "corpus"
     ensure_dir(corpus_dir)
 
-    tab_upload, tab_urls, tab_recap = st.tabs([
-        "Fichiers locaux", "URLs distantes", "Récapitulatif"
-    ])
+    # Sources d'acquisition (côte à côte)
+    col_upload, col_urls = st.columns(2)
 
-    with tab_upload:
+    with col_upload:
         _render_file_upload(corpus_dir)
 
-    with tab_urls:
+    with col_urls:
         _render_url_acquisition(corpus_dir)
 
-    with tab_recap:
-        _render_corpus_recap(corpus_dir)
+    # Récapitulatif du corpus
+    st.markdown("---")
+    _render_corpus_recap(corpus_dir)
 
 
 def _render_file_upload(corpus_dir: Path):
     """Upload de fichiers locaux."""
-    st.subheader("Téléversement de fichiers")
+    st.subheader("Fichiers locaux")
 
     uploaded_files = st.file_uploader(
         "Sélectionnez vos fichiers sources",
@@ -77,23 +77,21 @@ def _render_file_upload(corpus_dir: Path):
 
 def _render_url_acquisition(corpus_dir: Path):
     """Acquisition depuis URLs."""
-    st.subheader("Téléchargement depuis URLs")
+    st.subheader("URLs distantes")
 
     urls_text = st.text_area(
         "URLs (une par ligne)",
-        height=150,
+        height=120,
         placeholder="https://example.com/document.pdf\nhttps://example.com/page-web",
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        url_file = st.file_uploader(
-            "Ou importer depuis un fichier Excel/CSV",
-            type=["xlsx", "csv"],
-            key="url_file",
-        )
-    with col2:
-        slow_mode = st.checkbox("Mode sites lents (timeouts étendus)")
+    url_file = st.file_uploader(
+        "Ou importer depuis un fichier Excel/CSV",
+        type=["xlsx", "csv"],
+        key="url_file",
+    )
+
+    slow_mode = st.checkbox("Mode sites lents (timeouts étendus)")
 
     if st.button("Lancer l'acquisition", type="primary"):
         config = st.session_state.config
@@ -142,7 +140,7 @@ def _render_corpus_recap(corpus_dir: Path):
     files = sorted(f for f in corpus_dir.iterdir() if f.is_file() and not f.name.startswith(".") and f.suffix != ".json")
 
     if not files:
-        st.info("Aucun document dans le corpus. Utilisez les onglets ci-dessus pour ajouter des documents.")
+        st.info("Aucun document dans le corpus. Ajoutez des fichiers ou URLs ci-dessus.")
         return
 
     # Analyse du corpus
@@ -199,7 +197,7 @@ def _render_corpus_recap(corpus_dir: Path):
 
         if estimate.get("documents_exceeding_context", 0) > 0:
             st.warning(
-                f"⚠️ {estimate['documents_exceeding_context']} document(s) dépasse(nt) "
+                f"{estimate['documents_exceeding_context']} document(s) dépasse(nt) "
                 f"la fenêtre de contexte du modèle {model} ({estimate['context_window']:,} tokens)."
             )
 
@@ -219,7 +217,7 @@ def _render_corpus_recap(corpus_dir: Path):
 
     # Bouton pour passer à l'étape suivante
     st.markdown("---")
-    if st.button("Continuer vers le plan →", type="primary", use_container_width=True):
+    if st.button("Continuer vers le plan", type="primary", use_container_width=True):
         st.session_state.current_page = "plan"
         st.rerun()
 
@@ -233,6 +231,6 @@ def _display_report(report: AcquisitionReport):
 
     for status in report.statuses:
         if status.status == "SUCCESS":
-            st.markdown(f"✅ **{status.source}** → {status.message}")
+            st.markdown(f"**{status.source}** — {status.message}")
         else:
-            st.markdown(f"❌ **{status.source}** — {status.message}")
+            st.markdown(f"**{status.source}** — {status.message}")

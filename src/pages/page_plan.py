@@ -23,24 +23,32 @@ def render():
 
     state = st.session_state.project_state
 
-    tab_import, tab_generate, tab_view = st.tabs([
-        "Importer un plan", "Générer un plan", "Visualiser / Modifier"
-    ])
+    # Si un plan existe déjà, afficher directement la vue/modification
+    if state.plan:
+        _render_view_plan(state)
+    else:
+        # Sinon, proposer import ou génération
+        _render_create_plan(state)
 
-    with tab_import:
+
+def _render_create_plan(state):
+    """Interface unifiée pour créer un plan (import ou génération)."""
+    st.subheader("Créer le plan du document")
+
+    target_pages = state.config.get("target_pages") or 10
+    st.info(f"Taille cible du document : **{target_pages} pages**")
+
+    # Import depuis fichier ou texte
+    with st.expander("Importer un plan existant", expanded=True):
         _render_import_plan(state)
 
-    with tab_generate:
+    # Génération IA
+    with st.expander("Générer un plan avec l'IA"):
         _render_generate_plan(state)
-
-    with tab_view:
-        _render_view_plan(state)
 
 
 def _render_import_plan(state):
     """Import d'un plan depuis un fichier."""
-    st.subheader("Importer un plan existant")
-
     plan_file = st.file_uploader(
         "Fichier du plan",
         type=["pdf", "docx", "txt", "md", "csv", "xlsx"],
@@ -57,7 +65,6 @@ def _render_import_plan(state):
         parser = PlanParser()
 
         if plan_file:
-            # Sauvegarder temporairement
             project_id = st.session_state.current_project
             temp_path = PROJECTS_DIR / project_id / f"_temp_plan{Path(plan_file.name).suffix}"
             temp_path.write_bytes(plan_file.getvalue())
@@ -76,12 +83,11 @@ def _render_import_plan(state):
             st.error("Veuillez fournir un fichier ou saisir un plan.")
             return
 
-        # Distribuer le budget de pages
+        # Distribuer le budget de pages depuis la config persistée
         target_pages = state.config.get("target_pages")
         if target_pages:
             parser.distribute_page_budget(plan, target_pages)
 
-        # Définir l'objectif si disponible
         if state.config.get("objective"):
             plan.objective = state.config["objective"]
 
@@ -94,8 +100,6 @@ def _render_import_plan(state):
 
 def _render_generate_plan(state):
     """Génération automatique du plan par l'IA."""
-    st.subheader("Générer un plan avec l'IA")
-
     provider = st.session_state.get("provider")
     if not provider or not provider.is_available():
         st.warning("Configurez d'abord votre clé API dans la page Configuration.")
@@ -106,17 +110,18 @@ def _render_generate_plan(state):
         value=state.config.get("objective", ""),
         height=100,
         placeholder="Décrivez le document que vous souhaitez produire...",
-    )
-
-    target_pages = st.number_input(
-        "Nombre de pages cible", 1, 500,
-        value=state.config.get("target_pages") or 10,
+        key="plan_gen_objective",
     )
 
     if st.button("Générer le plan", type="primary"):
         if not objective:
             st.error("Veuillez décrire l'objectif du document.")
             return
+
+        # Persister l'objectif dans la config
+        state.config["objective"] = objective
+
+        target_pages = state.config.get("target_pages")
 
         with st.spinner("Génération du plan en cours..."):
             from src.core.orchestrator import Orchestrator
@@ -135,7 +140,6 @@ def _render_generate_plan(state):
             try:
                 plan = orchestrator.generate_plan_from_objective(objective, target_pages)
                 state.plan = plan
-                state.config["objective"] = objective
                 state.current_step = "plan"
                 _save_state(state)
                 st.success(f"Plan généré : {len(plan.sections)} sections.")
@@ -146,32 +150,28 @@ def _render_generate_plan(state):
 
 def _render_view_plan(state):
     """Visualisation et modification du plan."""
-    st.subheader("Plan normalisé")
-
-    if not state.plan:
-        st.info("Aucun plan chargé. Importez ou générez un plan.")
-        return
-
     plan = state.plan
+    target_pages = state.config.get("target_pages")
 
-    # Titre et objectif
-    st.markdown(f"**Titre :** {plan.title}")
+    # En-tête avec métriques
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Sections", len(plan.sections))
+    col2.metric("Pages cibles", target_pages or "Auto")
     if plan.objective:
-        st.markdown(f"**Objectif :** {plan.objective}")
+        col3.metric("Objectif", plan.objective[:30] + "..." if len(plan.objective or "") > 30 else plan.objective)
 
-    st.markdown(f"**Sections :** {len(plan.sections)}")
     st.markdown("---")
 
     # Affichage hiérarchique
     for section in plan.sections:
-        indent = "　" * (section.level - 1)  # Indentation visuelle
+        indent = "\u3000" * (section.level - 1)
         status_icon = {
-            "pending": "⬜",
-            "generating": "🔄",
-            "generated": "✅",
-            "validated": "✅",
-            "failed": "❌",
-        }.get(section.status, "⬜")
+            "pending": "",
+            "generating": "",
+            "generated": "",
+            "validated": "",
+            "failed": "",
+        }.get(section.status, "")
 
         budget_str = f" ({section.page_budget} p.)" if section.page_budget else ""
         st.markdown(f"{indent}{status_icon} **{section.id}** {section.title}{budget_str}")
@@ -181,9 +181,7 @@ def _render_view_plan(state):
 
     # Modification du plan
     st.markdown("---")
-    st.subheader("Modifier le plan")
-
-    with st.expander("Éditer le plan en texte brut"):
+    with st.expander("Modifier le plan"):
         plan_text = ""
         for s in plan.sections:
             indent = "  " * (s.level - 1)
@@ -198,7 +196,6 @@ def _render_view_plan(state):
             new_plan = parser.parse_text(edited_text)
             if state.config.get("objective"):
                 new_plan.objective = state.config["objective"]
-            target_pages = state.config.get("target_pages")
             if target_pages:
                 parser.distribute_page_budget(new_plan, target_pages)
             state.plan = new_plan
@@ -206,20 +203,23 @@ def _render_view_plan(state):
             st.success("Plan mis à jour.")
             st.rerun()
 
-    # Validation du plan (checkpoint)
+    with st.expander("Remplacer le plan"):
+        _render_create_plan(state)
+
+    # Navigation
     st.markdown("---")
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("Valider le plan et continuer →", type="primary", use_container_width=True):
+        if st.button("Valider le plan et continuer", type="primary", use_container_width=True):
             for section in state.plan.sections:
                 if section.status == "pending":
-                    section.status = "pending"  # Prêt pour génération
+                    section.status = "pending"
             state.current_step = "corpus"
             _save_state(state)
             st.session_state.current_page = "generation"
             st.rerun()
     with col2:
-        if st.button("Retour à l'acquisition", use_container_width=True):
+        if st.button("Retour", use_container_width=True):
             st.session_state.current_page = "acquisition"
             st.rerun()
 
