@@ -38,48 +38,140 @@ class StructuredCorpus:
         """Retourne les chunks les plus pertinents pour une section (Phase 1 : tous les chunks)."""
         return self.chunks[:max_chunks]
 
-    def get_corpus_digest(self, max_total_chars: int = 8000) -> list[dict]:
-        """Retourne un extrait représentatif de chaque document du corpus.
+    def get_corpus_digest(self, max_total_chars: int = 8000) -> dict:
+        """Retourne un digest représentatif du corpus, adapté à sa taille.
 
-        Chaque document reçoit un budget de caractères équitable
-        (max_total_chars / nb_documents). Seul le début de chaque document
-        est conservé (titre, résumé, introduction).
+        Trois paliers selon le nombre de documents :
+        - **full_excerpts** (1-10 docs) : extrait long du début de chaque doc,
+          budget réparti équitablement.
+        - **first_sentences** (11-50 docs) : nom du fichier + première phrase
+          de chaque document.
+        - **sampled** (51+ docs) : liste de tous les noms de fichiers + extraits
+          longs pour un échantillon régulier de ~5 documents.
 
         Args:
             max_total_chars: Budget total en caractères (~2000 tokens).
 
         Returns:
-            Liste de dicts {"source_file": str, "excerpt": str} triée par
-            nom de fichier source.
+            Dict avec les clés :
+            - ``tier`` : ``"full_excerpts"`` | ``"first_sentences"`` | ``"sampled"``
+            - ``num_documents`` : nombre total de documents
+            - ``entries`` : liste de dicts ``{"source_file", "text"}``
+            - ``all_filenames`` : (palier *sampled* uniquement) liste de tous
+              les noms de fichiers
         """
         if not self.chunks:
-            return []
+            return {"tier": "full_excerpts", "num_documents": 0, "entries": []}
 
-        # Regrouper les chunks par fichier source (conserver l'ordre d'index)
+        chunks_by_file = self._group_chunks_by_file()
+        num_files = len(chunks_by_file)
+        sorted_files = sorted(chunks_by_file.keys())
+
+        if num_files <= 10:
+            return self._digest_full_excerpts(chunks_by_file, sorted_files, max_total_chars)
+        elif num_files <= 50:
+            return self._digest_first_sentences(chunks_by_file, sorted_files)
+        else:
+            return self._digest_sampled(chunks_by_file, sorted_files, max_total_chars)
+
+    # -- Helpers internes pour get_corpus_digest --
+
+    def _group_chunks_by_file(self) -> dict[str, list["CorpusChunk"]]:
+        """Regroupe les chunks par fichier source, triés par index."""
         chunks_by_file: dict[str, list[CorpusChunk]] = {}
         for chunk in self.chunks:
             chunks_by_file.setdefault(chunk.source_file, []).append(chunk)
-
-        # Trier les chunks de chaque fichier par index
         for file_chunks in chunks_by_file.values():
             file_chunks.sort(key=lambda c: c.chunk_index)
+        return chunks_by_file
 
-        num_files = len(chunks_by_file)
-        budget_per_file = max_total_chars // num_files
-
-        digests: list[dict] = []
-        for source_file in sorted(chunks_by_file.keys()):
-            file_chunks = chunks_by_file[source_file]
+    def _digest_full_excerpts(
+        self,
+        chunks_by_file: dict[str, list["CorpusChunk"]],
+        sorted_files: list[str],
+        max_total_chars: int,
+    ) -> dict:
+        """Palier 1-10 docs : extrait long du début de chaque document."""
+        budget_per_file = max_total_chars // len(sorted_files)
+        entries = []
+        for source_file in sorted_files:
             excerpt = ""
-            for chunk in file_chunks:
+            for chunk in chunks_by_file[source_file]:
                 remaining = budget_per_file - len(excerpt)
                 if remaining <= 0:
                     break
                 excerpt += chunk.text[:remaining]
             if excerpt:
-                digests.append({"source_file": source_file, "excerpt": excerpt.strip()})
+                entries.append({"source_file": source_file, "text": excerpt.strip()})
+        return {
+            "tier": "full_excerpts",
+            "num_documents": len(sorted_files),
+            "entries": entries,
+        }
 
-        return digests
+    @staticmethod
+    def _extract_first_sentence(text: str) -> str:
+        """Extrait la première phrase non-vide d'un texte."""
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Couper à la première fin de phrase ou limiter à 200 chars
+            for sep in (". ", ".\n", ".\t"):
+                pos = line.find(sep)
+                if 0 < pos < 200:
+                    return line[: pos + 1]
+            return line[:200]
+        return text[:200]
+
+    def _digest_first_sentences(
+        self,
+        chunks_by_file: dict[str, list["CorpusChunk"]],
+        sorted_files: list[str],
+    ) -> dict:
+        """Palier 11-50 docs : nom du fichier + première phrase."""
+        entries = []
+        for source_file in sorted_files:
+            first_chunk = chunks_by_file[source_file][0]
+            sentence = self._extract_first_sentence(first_chunk.text)
+            entries.append({"source_file": source_file, "text": sentence})
+        return {
+            "tier": "first_sentences",
+            "num_documents": len(sorted_files),
+            "entries": entries,
+        }
+
+    def _digest_sampled(
+        self,
+        chunks_by_file: dict[str, list["CorpusChunk"]],
+        sorted_files: list[str],
+        max_total_chars: int,
+        sample_count: int = 5,
+    ) -> dict:
+        """Palier 51+ docs : liste de fichiers + extraits pour un échantillon."""
+        # Échantillonner à intervalles réguliers
+        n = len(sorted_files)
+        step = max(1, n // sample_count)
+        sampled_files = [sorted_files[i] for i in range(0, n, step)][:sample_count]
+
+        budget_per_sample = max_total_chars // len(sampled_files)
+        entries = []
+        for source_file in sampled_files:
+            excerpt = ""
+            for chunk in chunks_by_file[source_file]:
+                remaining = budget_per_sample - len(excerpt)
+                if remaining <= 0:
+                    break
+                excerpt += chunk.text[:remaining]
+            if excerpt:
+                entries.append({"source_file": source_file, "text": excerpt.strip()})
+
+        return {
+            "tier": "sampled",
+            "num_documents": n,
+            "entries": entries,
+            "all_filenames": sorted_files,
+        }
 
     def get_full_text(self) -> str:
         """Retourne le texte complet du corpus."""

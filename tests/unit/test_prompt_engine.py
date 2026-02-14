@@ -102,11 +102,15 @@ class TestBuildPlanGenerationPrompt:
         prompt = engine.build_plan_generation_prompt("Objectif test")
         assert "10" in prompt  # Valeur par défaut
 
-    def test_with_corpus_digest(self, engine):
-        digest = [
-            {"source_file": "rapport.pdf", "excerpt": "Résumé du rapport annuel 2024."},
-            {"source_file": "étude.docx", "excerpt": "Analyse du marché européen."},
-        ]
+    def test_with_full_excerpts_digest(self, engine):
+        digest = {
+            "tier": "full_excerpts",
+            "num_documents": 2,
+            "entries": [
+                {"source_file": "rapport.pdf", "text": "Résumé du rapport annuel 2024."},
+                {"source_file": "étude.docx", "text": "Analyse du marché européen."},
+            ],
+        }
         prompt = engine.build_plan_generation_prompt(
             "Synthèse stratégique", 15, corpus_digest=digest,
         )
@@ -117,9 +121,48 @@ class TestBuildPlanGenerationPrompt:
         assert "2 document(s)" in prompt
         assert "Tiens compte du contenu" in prompt
 
+    def test_with_first_sentences_digest(self, engine):
+        digest = {
+            "tier": "first_sentences",
+            "num_documents": 25,
+            "entries": [
+                {"source_file": f"doc_{i}.pdf", "text": f"Phrase du document {i}."}
+                for i in range(25)
+            ],
+        }
+        prompt = engine.build_plan_generation_prompt("Objectif", 10, corpus_digest=digest)
+        assert "25 documents" in prompt
+        assert "doc_0.pdf" in prompt
+        assert "doc_24.pdf" in prompt
+        assert "Phrase du document 0" in prompt
+
+    def test_with_sampled_digest(self, engine):
+        digest = {
+            "tier": "sampled",
+            "num_documents": 100,
+            "entries": [
+                {"source_file": "doc_000.pdf", "text": "Extrait du doc 0."},
+                {"source_file": "doc_050.pdf", "text": "Extrait du doc 50."},
+            ],
+            "all_filenames": [f"doc_{i:03d}.pdf" for i in range(100)],
+        }
+        prompt = engine.build_plan_generation_prompt("Objectif", 10, corpus_digest=digest)
+        assert "100 documents" in prompt
+        assert "Liste des sources" in prompt
+        assert "doc_000.pdf" in prompt
+        assert "doc_099.pdf" in prompt  # in filenames list
+        assert "Extrait du doc 0" in prompt
+        assert "échantillon de 2 documents" in prompt
+
     def test_without_corpus_digest(self, engine):
         prompt = engine.build_plan_generation_prompt("Objectif test", 10, corpus_digest=None)
-        assert "corpus documentaire" not in prompt.lower()
+        assert "corpus" not in prompt.lower()
+        assert "Tiens compte" not in prompt
+
+    def test_with_empty_digest(self, engine):
+        digest = {"tier": "full_excerpts", "num_documents": 0, "entries": []}
+        prompt = engine.build_plan_generation_prompt("Objectif", 10, corpus_digest=digest)
+        assert "corpus" not in prompt.lower()
         assert "Tiens compte" not in prompt
 
 

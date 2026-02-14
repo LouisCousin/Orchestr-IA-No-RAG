@@ -122,26 +122,19 @@ class PromptEngine:
         self,
         objective: str,
         target_pages: Optional[float] = None,
-        corpus_digest: Optional[list[dict]] = None,
+        corpus_digest: Optional[dict] = None,
     ) -> str:
         """Construit le prompt pour générer un plan automatiquement.
 
         Args:
             objective: Objectif du document.
             target_pages: Nombre de pages cible.
-            corpus_digest: Liste de dicts {"source_file", "excerpt"} produits
-                par StructuredCorpus.get_corpus_digest().
+            corpus_digest: Dict produit par ``StructuredCorpus.get_corpus_digest()``
+                avec les clés ``tier``, ``num_documents``, ``entries``, et
+                optionnellement ``all_filenames``.
         """
-        if corpus_digest:
-            parts = []
-            for i, doc in enumerate(corpus_digest, 1):
-                parts.append(f"[Document {i} : {doc['source_file']}]\n{doc['excerpt']}")
-            corpus_text = "\n\n---\n\n".join(parts)
-            corpus_section = (
-                f"\n## Extraits du corpus documentaire disponible\n"
-                f"Voici un extrait représentatif de chaque document source "
-                f"({len(corpus_digest)} document(s)) :\n\n{corpus_text}\n\n"
-            )
+        if corpus_digest and corpus_digest.get("entries"):
+            corpus_section = self._format_corpus_digest(corpus_digest)
             corpus_instruction = (
                 "- Tiens compte du contenu des documents fournis pour structurer le plan "
                 "de manière pertinente par rapport aux informations disponibles.\n"
@@ -156,6 +149,48 @@ class PromptEngine:
             corpus_section=corpus_section,
             corpus_instruction=corpus_instruction,
         )
+
+    @staticmethod
+    def _format_corpus_digest(digest: dict) -> str:
+        """Formate le digest du corpus selon le palier utilisé."""
+        tier = digest["tier"]
+        num_docs = digest["num_documents"]
+        entries = digest["entries"]
+
+        if tier == "full_excerpts":
+            parts = []
+            for i, entry in enumerate(entries, 1):
+                parts.append(f"[Document {i} : {entry['source_file']}]\n{entry['text']}")
+            corpus_text = "\n\n---\n\n".join(parts)
+            return (
+                f"\n## Extraits du corpus documentaire disponible\n"
+                f"Voici un extrait représentatif de chaque document source "
+                f"({num_docs} document(s)) :\n\n{corpus_text}\n\n"
+            )
+
+        elif tier == "first_sentences":
+            lines = []
+            for i, entry in enumerate(entries, 1):
+                lines.append(f"{i}. {entry['source_file']} — {entry['text']}")
+            listing = "\n".join(lines)
+            return (
+                f"\n## Documents disponibles ({num_docs} documents)\n\n"
+                f"{listing}\n\n"
+            )
+
+        else:  # sampled
+            all_filenames = digest.get("all_filenames", [])
+            filenames_str = ", ".join(all_filenames)
+            parts = []
+            for i, entry in enumerate(entries, 1):
+                parts.append(f"[{entry['source_file']}]\n{entry['text']}")
+            excerpts_text = "\n\n---\n\n".join(parts)
+            return (
+                f"\n## Corpus disponible ({num_docs} documents)\n\n"
+                f"### Liste des sources\n{filenames_str}\n\n"
+                f"### Extraits représentatifs (échantillon de {len(entries)} documents)\n\n"
+                f"{excerpts_text}\n\n"
+            )
 
     def build_summary_prompt(self, section_title: str, content: str) -> str:
         """Construit le prompt pour résumer une section (contexte pour les suivantes)."""
