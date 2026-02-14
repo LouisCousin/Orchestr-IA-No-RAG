@@ -102,6 +102,26 @@ class TestBuildPlanGenerationPrompt:
         prompt = engine.build_plan_generation_prompt("Objectif test")
         assert "10" in prompt  # Valeur par défaut
 
+    def test_with_corpus_digest(self, engine):
+        digest = [
+            {"source_file": "rapport.pdf", "excerpt": "Résumé du rapport annuel 2024."},
+            {"source_file": "étude.docx", "excerpt": "Analyse du marché européen."},
+        ]
+        prompt = engine.build_plan_generation_prompt(
+            "Synthèse stratégique", 15, corpus_digest=digest,
+        )
+        assert "rapport.pdf" in prompt
+        assert "étude.docx" in prompt
+        assert "Résumé du rapport annuel" in prompt
+        assert "Analyse du marché européen" in prompt
+        assert "2 document(s)" in prompt
+        assert "Tiens compte du contenu" in prompt
+
+    def test_without_corpus_digest(self, engine):
+        prompt = engine.build_plan_generation_prompt("Objectif test", 10, corpus_digest=None)
+        assert "corpus documentaire" not in prompt.lower()
+        assert "Tiens compte" not in prompt
+
 
 class TestBuildSummaryPrompt:
     def test_summary_prompt(self, engine):

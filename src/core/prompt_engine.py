@@ -49,13 +49,13 @@ PLAN_GENERATION_PROMPT = """À partir de l'objectif suivant, génère un plan st
 
 ## Taille cible
 {target_pages} pages environ.
-
+{corpus_section}
 ## Instructions
 - Propose un plan hiérarchique avec des sections numérotées (1. / 1.1 / 1.1.1).
 - Chaque section doit avoir un titre clair et descriptif.
 - Le plan doit être logique, progressif et couvrir l'ensemble du sujet.
 - Adapte le nombre de sections à la taille cible demandée.
-- Retourne uniquement le plan, sans commentaires ni explications.
+{corpus_instruction}- Retourne uniquement le plan, sans commentaires ni explications.
 """
 
 
@@ -118,11 +118,43 @@ class PromptEngine:
             corpus_content=corpus_content,
         )
 
-    def build_plan_generation_prompt(self, objective: str, target_pages: Optional[float] = None) -> str:
-        """Construit le prompt pour générer un plan automatiquement."""
+    def build_plan_generation_prompt(
+        self,
+        objective: str,
+        target_pages: Optional[float] = None,
+        corpus_digest: Optional[list[dict]] = None,
+    ) -> str:
+        """Construit le prompt pour générer un plan automatiquement.
+
+        Args:
+            objective: Objectif du document.
+            target_pages: Nombre de pages cible.
+            corpus_digest: Liste de dicts {"source_file", "excerpt"} produits
+                par StructuredCorpus.get_corpus_digest().
+        """
+        if corpus_digest:
+            parts = []
+            for i, doc in enumerate(corpus_digest, 1):
+                parts.append(f"[Document {i} : {doc['source_file']}]\n{doc['excerpt']}")
+            corpus_text = "\n\n---\n\n".join(parts)
+            corpus_section = (
+                f"\n## Extraits du corpus documentaire disponible\n"
+                f"Voici un extrait représentatif de chaque document source "
+                f"({len(corpus_digest)} document(s)) :\n\n{corpus_text}\n\n"
+            )
+            corpus_instruction = (
+                "- Tiens compte du contenu des documents fournis pour structurer le plan "
+                "de manière pertinente par rapport aux informations disponibles.\n"
+            )
+        else:
+            corpus_section = ""
+            corpus_instruction = ""
+
         return PLAN_GENERATION_PROMPT.format(
             objective=objective,
             target_pages=target_pages or 10,
+            corpus_section=corpus_section,
+            corpus_instruction=corpus_instruction,
         )
 
     def build_summary_prompt(self, section_title: str, content: str) -> str:

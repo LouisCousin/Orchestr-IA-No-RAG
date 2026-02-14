@@ -287,11 +287,27 @@ class Orchestrator:
             return self.state
         return None
 
-    def generate_plan_from_objective(self, objective: str, target_pages: Optional[float] = None) -> NormalizedPlan:
-        """Génère un plan à partir d'un objectif en langage naturel."""
+    def generate_plan_from_objective(
+        self,
+        objective: str,
+        target_pages: Optional[float] = None,
+        corpus: Optional[StructuredCorpus] = None,
+    ) -> NormalizedPlan:
+        """Génère un plan à partir d'un objectif en langage naturel.
+
+        Args:
+            objective: Description de l'objectif du document.
+            target_pages: Nombre de pages cible.
+            corpus: Corpus structuré optionnel. Si fourni, des extraits
+                représentatifs de chaque document seront injectés dans le
+                prompt pour guider la structure du plan.
+        """
         from src.core.plan_parser import PlanParser
 
-        prompt = self.prompt_engine.build_plan_generation_prompt(objective, target_pages)
+        corpus_digest = corpus.get_corpus_digest() if corpus else None
+        prompt = self.prompt_engine.build_plan_generation_prompt(
+            objective, target_pages, corpus_digest=corpus_digest,
+        )
         system_prompt = self.prompt_engine.build_system_prompt()
 
         response = self.provider.generate(

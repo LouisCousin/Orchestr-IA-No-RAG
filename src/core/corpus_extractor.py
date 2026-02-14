@@ -38,6 +38,49 @@ class StructuredCorpus:
         """Retourne les chunks les plus pertinents pour une section (Phase 1 : tous les chunks)."""
         return self.chunks[:max_chunks]
 
+    def get_corpus_digest(self, max_total_chars: int = 8000) -> list[dict]:
+        """Retourne un extrait représentatif de chaque document du corpus.
+
+        Chaque document reçoit un budget de caractères équitable
+        (max_total_chars / nb_documents). Seul le début de chaque document
+        est conservé (titre, résumé, introduction).
+
+        Args:
+            max_total_chars: Budget total en caractères (~2000 tokens).
+
+        Returns:
+            Liste de dicts {"source_file": str, "excerpt": str} triée par
+            nom de fichier source.
+        """
+        if not self.chunks:
+            return []
+
+        # Regrouper les chunks par fichier source (conserver l'ordre d'index)
+        chunks_by_file: dict[str, list[CorpusChunk]] = {}
+        for chunk in self.chunks:
+            chunks_by_file.setdefault(chunk.source_file, []).append(chunk)
+
+        # Trier les chunks de chaque fichier par index
+        for file_chunks in chunks_by_file.values():
+            file_chunks.sort(key=lambda c: c.chunk_index)
+
+        num_files = len(chunks_by_file)
+        budget_per_file = max_total_chars // num_files
+
+        digests: list[dict] = []
+        for source_file in sorted(chunks_by_file.keys()):
+            file_chunks = chunks_by_file[source_file]
+            excerpt = ""
+            for chunk in file_chunks:
+                remaining = budget_per_file - len(excerpt)
+                if remaining <= 0:
+                    break
+                excerpt += chunk.text[:remaining]
+            if excerpt:
+                digests.append({"source_file": source_file, "excerpt": excerpt.strip()})
+
+        return digests
+
     def get_full_text(self) -> str:
         """Retourne le texte complet du corpus."""
         return "\n\n---\n\n".join(c.text for c in self.chunks)

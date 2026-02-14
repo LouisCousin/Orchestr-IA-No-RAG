@@ -138,7 +138,9 @@ def _render_generate_plan(state):
             )
 
             try:
-                plan = orchestrator.generate_plan_from_objective(objective, target_pages)
+                plan = orchestrator.generate_plan_from_objective(
+                    objective, target_pages, corpus=state.corpus,
+                )
                 state.plan = plan
                 state.current_step = "plan"
                 _save_state(state)
