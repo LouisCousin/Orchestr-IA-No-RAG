@@ -73,7 +73,7 @@ def _render_model_config():
     if provider:
         models = provider.list_models()
     else:
-        models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+        models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 
     current_model = config.get("model", "gpt-4o")
     model = st.selectbox("Modèle", models, index=models.index(current_model) if current_model in models else 0)

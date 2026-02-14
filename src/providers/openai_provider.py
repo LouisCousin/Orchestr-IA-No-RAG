@@ -13,7 +13,7 @@ logger = logging.getLogger("orchestria")
 class OpenAIProvider(BaseProvider):
     """Fournisseur OpenAI."""
 
-    MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+    MODELS = ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 
     def __init__(self, api_key: Optional[str] = None, max_retries: int = 3, base_delay: float = 2.0):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
