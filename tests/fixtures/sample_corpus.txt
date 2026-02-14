@@ -1,0 +1,7 @@
+L'intelligence artificielle générative connaît une croissance exponentielle depuis 2022. Les modèles de langage de grande taille (LLM) comme GPT-4, Claude et Gemini ont transformé de nombreux secteurs d'activité.
+
+Dans le domaine de la rédaction professionnelle, l'IA permet d'automatiser la production de documents structurés tout en maintenant un niveau de qualité élevé. Les entreprises qui adoptent ces technologies constatent une amélioration significative de leur productivité.
+
+Cependant, l'utilisation de l'IA générative soulève des questions importantes en matière de fiabilité des informations produites. Les hallucinations — des informations plausibles mais factuellement incorrectes — restent un défi majeur que les systèmes de vérification factuelle tentent de résoudre.
+
+Les approches RAG (Retrieval-Augmented Generation) constituent une solution prometteuse : en ancrant la génération dans un corpus documentaire vérifié, elles réduisent significativement le risque d'hallucinations tout en préservant la fluidité de la rédaction.

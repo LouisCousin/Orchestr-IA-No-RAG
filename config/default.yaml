@@ -1,0 +1,74 @@
+# Orchestr'IA - Configuration par défaut
+
+# Identifiant utilisateur par défaut (mono-utilisateur, prêt multi-utilisateur)
+default_user_id: "user_default"
+
+# Fournisseur IA par défaut
+default_provider: "openai"
+default_model: "gpt-4o"
+
+# Paramètres de génération
+generation:
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 1.0
+  frequency_penalty: 0.0
+  presence_penalty: 0.0
+  number_of_passes: 1
+
+# Mode par défaut
+mode: "manual"  # "manual" ou "agentic"
+
+# Checkpoints HITL (mode manuel)
+checkpoints:
+  after_plan_validation: true
+  after_corpus_acquisition: false
+  after_extraction: false
+  after_prompt_generation: false
+  after_generation: false
+  final_review: true
+
+# Acquisition du corpus
+corpus_acquisition:
+  connection_timeout: 15
+  read_timeout: 60
+  slow_mode_connection_timeout: 30
+  slow_mode_read_timeout: 120
+  throttle_delay: 1.0
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+# Taille cible du document
+target_pages: null  # null = automatique
+
+# Charte graphique par défaut (Forgescom)
+styling:
+  primary_color: "#F0C441"
+  secondary_color: "#4E4E50"
+  font_title: "Calibri"
+  font_body: "Calibri"
+  font_size_title: 16
+  font_size_body: 11
+  margin_top_cm: 2.5
+  margin_bottom_cm: 2.5
+  margin_left_cm: 2.5
+  margin_right_cm: 2.5
+  logo_path: null
+
+# Chemins
+paths:
+  projects: "projects"
+  output: "output"
+  templates: "templates"
+  profiles: "profiles"
+  config: "config"
+
+# Retry API
+api_retry:
+  max_retries: 3
+  base_delay: 2.0
+  max_delay: 60.0
+
+# Estimation de coûts
+cost_estimation:
+  enabled: true
+  warn_threshold_usd: 5.0

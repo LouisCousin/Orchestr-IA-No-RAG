@@ -1,0 +1,42 @@
+# Orchestr'IA - Tarifs des modèles IA
+# Prix en USD par million de tokens
+
+openai:
+  gpt-4o:
+    input: 2.50
+    output: 10.00
+    context_window: 128000
+  gpt-4o-mini:
+    input: 0.15
+    output: 0.60
+    context_window: 128000
+  gpt-4-turbo:
+    input: 10.00
+    output: 30.00
+    context_window: 128000
+  gpt-3.5-turbo:
+    input: 0.50
+    output: 1.50
+    context_window: 16385
+
+# Phase 2
+anthropic:
+  claude-sonnet-4-20250514:
+    input: 3.00
+    output: 15.00
+    context_window: 200000
+  claude-haiku-35-20241022:
+    input: 0.80
+    output: 4.00
+    context_window: 200000
+
+# Phase 2
+google:
+  gemini-1.5-pro:
+    input: 1.25
+    output: 5.00
+    context_window: 2000000
+  gemini-1.5-flash:
+    input: 0.075
+    output: 0.30
+    context_window: 1000000
