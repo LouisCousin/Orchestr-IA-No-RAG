@@ -8,7 +8,8 @@ ROOT_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 import streamlit as st
-from src.utils.config import load_env, load_default_config
+from src.utils.config import load_env, load_default_config, ROOT_DIR
+from src.utils.file_utils import save_json
 from src.utils.logger import ActivityLog, setup_logging
 
 # Charger les variables d'environnement
@@ -64,6 +65,12 @@ def render_sidebar():
 
         for page_id, page_name in pages.items():
             if st.button(page_name, key=f"nav_{page_id}", use_container_width=True):
+                # Persister l'état avant navigation
+                state = st.session_state.get("project_state")
+                project_id = st.session_state.get("current_project")
+                if state and project_id:
+                    state_path = ROOT_DIR / "projects" / project_id / "state.json"
+                    save_json(state_path, state.to_dict())
                 st.session_state.current_page = page_id
 
         st.markdown("---")

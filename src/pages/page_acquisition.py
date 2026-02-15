@@ -4,7 +4,7 @@ import streamlit as st
 from pathlib import Path
 
 from src.utils.config import ROOT_DIR
-from src.utils.file_utils import ensure_dir
+from src.utils.file_utils import ensure_dir, save_json
 from src.utils.token_counter import count_tokens
 from src.core.corpus_acquirer import CorpusAcquirer, AcquisitionReport
 from src.core.text_extractor import extract
@@ -220,6 +220,12 @@ def _render_corpus_recap(corpus_dir: Path):
     # Bouton pour passer à l'étape suivante
     st.markdown("---")
     if st.button("Continuer vers le plan", type="primary", use_container_width=True):
+        state = st.session_state.project_state
+        if state:
+            state.current_step = "plan"
+            project_id = st.session_state.current_project
+            if project_id:
+                save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
         st.session_state.current_page = "plan"
         st.rerun()
 

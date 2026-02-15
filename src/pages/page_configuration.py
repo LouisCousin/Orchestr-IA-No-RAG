@@ -5,6 +5,11 @@ import streamlit as st
 
 from src.core.checkpoint_manager import CheckpointConfig
 from src.core.cost_tracker import CostTracker
+from src.utils.config import ROOT_DIR
+from src.utils.file_utils import save_json
+
+
+PROJECTS_DIR = ROOT_DIR / "projects"
 
 
 PROVIDERS_INFO = {
@@ -30,6 +35,14 @@ PROVIDERS_INFO = {
         "default_model": "gemini-3.0-flash",
     },
 }
+
+
+def _save_state(state):
+    """Sauvegarde l'état du projet sur disque."""
+    project_id = st.session_state.current_project
+    if project_id:
+        state_path = PROJECTS_DIR / project_id / "state.json"
+        save_json(state_path, state.to_dict())
 
 
 def _create_provider(provider_name: str, api_key: str):
@@ -120,6 +133,7 @@ def _render_api_config():
             st.session_state.cost_tracker = CostTracker()
             config["default_provider"] = selected_provider
             st.session_state.project_state.config = config
+            _save_state(st.session_state.project_state)
             st.success(f"Connexion {info['label']} validée !")
         else:
             st.error("Clé API invalide ou vide.")
@@ -173,6 +187,7 @@ def _render_model_config():
         config["max_tokens"] = max_tokens
         config["number_of_passes"] = num_passes
         st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
         st.success("Configuration sauvegardée.")
 
 
@@ -214,6 +229,7 @@ def _render_mode_config():
             config["checkpoints"]["after_generation"] = False
             config["checkpoints"]["final_review"] = True
         st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
         st.success(f"Mode {'agentique' if mode == 'agentic' else 'manuel'} activé.")
 
 
@@ -241,6 +257,7 @@ def _render_checkpoint_config():
             "final_review": cp_final,
         }
         st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
         st.success("Checkpoints sauvegardés.")
 
 
@@ -273,6 +290,7 @@ def _render_styling_config():
             "margin_right_cm": styling.get("margin_right_cm", 2.5),
         }
         st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
         st.success("Charte graphique sauvegardée.")
 
 
@@ -326,6 +344,7 @@ def _render_rag_config():
         config["coverage_insufficient_threshold"] = insufficient
         config["coverage_min_blocks"] = min_blocks
         st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
         st.success("Configuration RAG sauvegardée.")
 
 
@@ -354,6 +373,7 @@ def _render_config_export_import():
                 if st.button("Appliquer la configuration importée"):
                     config.update(imported_config)
                     st.session_state.project_state.config = config
+                    _save_state(st.session_state.project_state)
                     st.success("Configuration importée et appliquée.")
                     st.rerun()
             else:
