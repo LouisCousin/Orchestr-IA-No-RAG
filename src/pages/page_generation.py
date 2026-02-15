@@ -11,8 +11,22 @@ from src.core.corpus_extractor import CorpusExtractor
 from src.core.cost_tracker import CostTracker
 from src.core.checkpoint_manager import CheckpointManager, CheckpointConfig
 
-
 PROJECTS_DIR = ROOT_DIR / "projects"
+
+PROVIDERS_INFO = {
+    "openai": {
+        "models": ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        "default_model": "gpt-4o",
+    },
+    "anthropic": {
+        "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-35-20241022"],
+        "default_model": "claude-sonnet-4-5-20250514",
+    },
+    "google": {
+        "models": ["gemini-3.0-pro", "gemini-3.0-flash"],
+        "default_model": "gemini-3.0-flash",
+    },
+}
 
 
 def render():
@@ -34,6 +48,8 @@ def render():
         st.warning("Fournisseur IA non configuré. Rendez-vous sur la page Configuration.")
         return
 
+    _render_generation_config(state, provider)
+    st.markdown("---")
     _render_launch_and_progress(state, provider)
 
     # Sections reportées (génération conditionnelle)
@@ -45,6 +61,70 @@ def render():
     if state.generated_sections:
         st.markdown("---")
         _render_review(state)
+
+
+def _render_generation_config(state, provider):
+    """Panneau d'ajustement de la configuration avant génération."""
+    config = state.config
+    provider_name = config.get("default_provider", provider.name)
+    info = PROVIDERS_INFO.get(provider_name, {})
+
+    # Liste des modèles depuis le provider ou fallback
+    models = provider.list_models() if provider else info.get("models", [])
+    current_model = config.get("model", provider.get_default_model())
+    if current_model not in models:
+        current_model = models[0] if models else provider.get_default_model()
+
+    with st.expander("Ajuster la configuration", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            model = st.selectbox(
+                "Modèle",
+                models,
+                index=models.index(current_model) if current_model in models else 0,
+                key="gen_model",
+            )
+            temperature = st.slider(
+                "Température", 0.0, 1.0,
+                value=config.get("temperature", 0.7),
+                step=0.1,
+                help="0 = déterministe, 1 = créatif",
+                key="gen_temperature",
+            )
+        with col2:
+            max_tokens = st.number_input(
+                "Tokens max par section", 512, 16384,
+                value=config.get("max_tokens", 4096),
+                step=512,
+                key="gen_max_tokens",
+            )
+            num_passes = st.number_input(
+                "Nombre de passes",
+                min_value=1, max_value=5,
+                value=config.get("number_of_passes", 1),
+                help="1 = brouillon seul, 2+ = brouillon + raffinement(s)",
+                key="gen_num_passes",
+            )
+
+        # Détecter les changements et sauvegarder
+        changed = (
+            model != config.get("model")
+            or temperature != config.get("temperature", 0.7)
+            or max_tokens != config.get("max_tokens", 4096)
+            or num_passes != config.get("number_of_passes", 1)
+        )
+
+        if changed:
+            if st.button("Appliquer les modifications", type="primary", key="apply_gen_config"):
+                config["model"] = model
+                config["temperature"] = temperature
+                config["max_tokens"] = max_tokens
+                config["number_of_passes"] = num_passes
+                state.config = config
+                project_id = st.session_state.current_project
+                save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+                st.success("Configuration mise à jour.")
+                st.rerun()
 
 
 def _render_launch_and_progress(state, provider):

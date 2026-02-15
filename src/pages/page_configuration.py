@@ -131,7 +131,12 @@ def _render_api_config():
         if provider and provider.is_available():
             st.session_state.provider = provider
             st.session_state.cost_tracker = CostTracker()
+            old_provider = config.get("default_provider")
             config["default_provider"] = selected_provider
+            # Mettre à jour le modèle si le fournisseur a changé
+            if old_provider != selected_provider:
+                default_model = PROVIDERS_INFO[selected_provider]["default_model"]
+                config["model"] = default_model
             st.session_state.project_state.config = config
             _save_state(st.session_state.project_state)
             st.success(f"Connexion {info['label']} validée !")
@@ -156,6 +161,10 @@ def _render_model_config():
     current_model = config.get("model", info["default_model"])
     if current_model not in models:
         current_model = models[0]
+        # Corriger automatiquement le modèle invalide dans la config
+        config["model"] = current_model
+        st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
 
     model = st.selectbox("Modèle", models, index=models.index(current_model) if current_model in models else 0)
 
