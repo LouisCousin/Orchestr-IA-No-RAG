@@ -164,24 +164,79 @@ def _render_view_plan(state):
         display_obj = objective_text[:30] + "..." if len(objective_text) > 30 else objective_text
         col3.metric("Objectif", display_obj)
 
+    # Phase 2.5 : résumé du corpus si disponible
+    plan_context = None
+    orchestrator = st.session_state.get("orchestrator")
+    if orchestrator and hasattr(orchestrator, "_last_plan_context"):
+        plan_context = orchestrator._last_plan_context
+
+    if plan_context and plan_context.corpus_summary:
+        summary = plan_context.corpus_summary
+        with st.expander(
+            f"📚 Corpus analysé : {summary.get('total_documents', 0)} documents, "
+            f"{summary.get('total_tokens', 0):,} tokens"
+        ):
+            if plan_context.themes:
+                st.markdown("**Thèmes identifiés :**")
+                for theme in plan_context.themes:
+                    cov = plan_context.coverage.get(theme, {})
+                    avg = cov.get("avg_score", 0)
+                    nb = cov.get("nb_chunks", 0)
+                    if avg >= 0.5:
+                        icon = "🟢"
+                    elif avg >= 0.3:
+                        icon = "🟡"
+                    else:
+                        icon = "🔴"
+                    st.markdown(f"  {icon} {theme} — score: {avg:.2f}, {nb} blocs")
+
     st.markdown("---")
 
     # Affichage hiérarchique
     for section in plan.sections:
         indent = "\u3000" * (section.level - 1)
         status_icon = {
-            "pending": "",
-            "generating": "",
-            "generated": "",
-            "validated": "",
-            "failed": "",
-        }.get(section.status, "")
+            "pending": "⬜",
+            "generating": "🔄",
+            "generated": "✅",
+            "validated": "✔️",
+            "failed": "❌",
+        }.get(section.status, "⬜")
 
         budget_str = f" ({section.page_budget} p.)" if section.page_budget else ""
-        st.markdown(f"{indent}{status_icon} **{section.id}** {section.title}{budget_str}")
+
+        # Phase 2.5 : indicateur de couverture corpus
+        coverage_indicator = ""
+        if plan_context and plan_context.coverage:
+            best_score = 0
+            for theme, cov in plan_context.coverage.items():
+                if (theme.lower() in section.title.lower()
+                        or section.title.lower() in theme.lower()):
+                    best_score = max(best_score, cov.get("avg_score", 0))
+            if best_score > 0:
+                if best_score >= 0.5:
+                    coverage_indicator = " 🟢"
+                elif best_score >= 0.3:
+                    coverage_indicator = " 🟡"
+                else:
+                    coverage_indicator = " 🔴"
+
+        st.markdown(
+            f"{indent}{status_icon} **{section.id}** {section.title}"
+            f"{budget_str}{coverage_indicator}"
+        )
 
         if section.description:
             st.caption(f"{indent}  _{section.description}_")
+
+    # Phase 2.5 : légende des indicateurs de couverture
+    if plan_context and plan_context.coverage:
+        st.markdown("---")
+        st.caption(
+            "🟢 Couverture forte (≥0.5) · "
+            "🟡 Couverture partielle (0.3–0.5) · "
+            "🔴 Couverture faible (<0.3)"
+        )
 
     # Modification du plan
     st.markdown("---")

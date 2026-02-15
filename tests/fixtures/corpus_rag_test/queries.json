@@ -1,0 +1,29 @@
+{
+  "queries": [
+    {
+      "query": "Comment l'intelligence artificielle transforme l'éducation ?",
+      "expected_docs": ["doc_ia_education.txt"],
+      "min_precision_at_3": 0.33
+    },
+    {
+      "query": "Quelles sont les menaces de cybersécurité pour les PME ?",
+      "expected_docs": ["doc_cybersecurite.txt"],
+      "min_precision_at_3": 0.33
+    },
+    {
+      "query": "Outils Microsoft pour la collaboration en entreprise",
+      "expected_docs": ["doc_microsoft365.txt", "doc_transformation_num.txt"],
+      "min_precision_at_3": 0.33
+    },
+    {
+      "query": "Programmes de formation aux compétences numériques",
+      "expected_docs": ["doc_formation_prof.txt", "doc_ia_education.txt"],
+      "min_precision_at_3": 0.33
+    },
+    {
+      "query": "Stratégie de transformation numérique organisationnelle",
+      "expected_docs": ["doc_transformation_num.txt"],
+      "min_precision_at_3": 0.33
+    }
+  ]
+}
