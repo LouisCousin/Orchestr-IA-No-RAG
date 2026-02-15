@@ -87,6 +87,35 @@ class ProjectState:
         return state
 
 
+def _normalize_config(config: dict) -> dict:
+    """Flatten nested YAML config keys to the flat keys used by the codebase.
+
+    Maps known nested structures (e.g. ``conditional_generation.enabled``)
+    to the flat keys the orchestrator and UI expect (e.g.
+    ``conditional_generation_enabled``).  Flat keys already present take
+    precedence so that values set by the UI are never overwritten.
+    """
+    mapping = {
+        # conditional_generation.*
+        ("conditional_generation", "enabled"): "conditional_generation_enabled",
+        ("conditional_generation", "sufficient_threshold"): "coverage_sufficient_threshold",
+        ("conditional_generation", "insufficient_threshold"): "coverage_insufficient_threshold",
+        ("conditional_generation", "min_relevant_blocks"): "coverage_min_blocks",
+        # anti_hallucination.*
+        ("anti_hallucination", "enabled"): "anti_hallucination_enabled",
+        # plan_corpus_linking.* — kept nested (read via .get("plan_corpus_linking", {}))
+        # batch.* — kept nested for now
+    }
+
+    for (section, key), flat_key in mapping.items():
+        if flat_key not in config:
+            nested = config.get(section)
+            if isinstance(nested, dict) and key in nested:
+                config[flat_key] = nested[key]
+
+    return config
+
+
 class Orchestrator:
     """Orchestre le pipeline de génération séquentielle.
 
@@ -108,9 +137,10 @@ class Orchestrator:
         self.checkpoint_mgr = checkpoint_manager or CheckpointManager()
         self.cost_tracker = cost_tracker or CostTracker()
         self.activity_log = activity_log or ActivityLog()
-        self.config = config or {}
+        self.config = _normalize_config(config or {})
         self.prompt_engine = PromptEngine(
-            persistent_instructions=self.config.get("persistent_instructions", "")
+            persistent_instructions=self.config.get("persistent_instructions", ""),
+            anti_hallucination_enabled=self.config.get("anti_hallucination_enabled", True),
         )
         self.rag_engine = None
         self.conditional_generator = None
@@ -197,7 +227,7 @@ class Orchestrator:
 
                 chunks_by_doc = {}
                 for ext in self.state.corpus.extractions:
-                    doc_id = ext.hash_text or ext.source_filename
+                    doc_id = ext.source_filename
 
                     # Enregistrer le document dans SQLite
                     doc_meta = DocumentMetadata(

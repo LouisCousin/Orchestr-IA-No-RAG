@@ -137,6 +137,19 @@ def _render_generate_plan(state):
                 config=state.config,
             )
 
+            # Phase 2.5 : indexer le corpus avant la génération du plan
+            # pour activer le plan-corpus linker (Bug #2 fix)
+            if state.corpus:
+                orchestrator._init_rag()
+                if orchestrator.rag_engine:
+                    if orchestrator.rag_engine.indexed_count == 0:
+                        with st.spinner("Indexation du corpus..."):
+                            orchestrator.index_corpus_rag()
+
+            # Stocker l'orchestrateur en session pour l'affichage
+            # du plan_context dans _render_view_plan() (Bug #1 fix)
+            st.session_state["orchestrator"] = orchestrator
+
             try:
                 plan = orchestrator.generate_plan_from_objective(
                     objective, target_pages, corpus=state.corpus,
