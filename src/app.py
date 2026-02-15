@@ -79,7 +79,7 @@ def render_sidebar():
         if st.session_state.project_state:
             state = st.session_state.project_state
             st.markdown("### Progression")
-            steps = ["init", "plan", "corpus", "generation", "review", "export", "done"]
+            steps = ["init", "plan", "generation", "review", "export"]
             current_idx = steps.index(state.current_step) if state.current_step in steps else 0
             progress = current_idx / (len(steps) - 1)
             st.progress(progress, text=f"Étape : {state.current_step}")

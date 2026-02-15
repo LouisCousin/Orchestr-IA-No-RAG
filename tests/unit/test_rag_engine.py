@@ -132,8 +132,8 @@ class TestRAGEngineSearch:
 
         assert len(result.chunks) == 2
         assert result.chunks[0]["source_file"] == "doc1.txt"
-        # Distance 0.2 → similarity 0.9
-        assert result.chunks[0]["similarity"] == 0.9
+        # Distance 0.2 → similarity 0.8 (cosine similarity = 1 - distance)
+        assert result.chunks[0]["similarity"] == 0.8
         assert result.num_relevant == 2
         assert result.total_tokens == 25
 

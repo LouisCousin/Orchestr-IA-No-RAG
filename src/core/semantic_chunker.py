@@ -49,7 +49,7 @@ class Chunk:
 
 def _count_tokens(text: str) -> int:
     """Estimation du nombre de tokens (heuristique : ~4 chars/token en français)."""
-    return len(text.split()) * 4 // 3
+    return max(1, len(text) // 4)
 
 
 def _split_sentences(text: str) -> list[str]:

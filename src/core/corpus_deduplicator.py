@@ -74,8 +74,33 @@ class CorpusDeduplicator:
                 logger.warning(f"Impossible de charger l'index de déduplication : {e}")
 
     def save_index(self, report: DeduplicationReport) -> None:
-        """Persiste l'index de déduplication sur le disque."""
-        save_json(self.index_path, report.to_dict())
+        """Persiste l'index de déduplication sur le disque.
+
+        Fusionne les entrées du rapport avec les entrées précédemment
+        enregistrées dans l'index afin de ne pas perdre l'historique.
+        """
+        # Charger les entrées existantes depuis le fichier pour les conserver
+        existing_entries = {}
+        if self.index_path.exists():
+            try:
+                data = load_json(self.index_path)
+                for entry in data.get("entries", []):
+                    existing_entries[entry["filename"]] = entry
+            except Exception:
+                pass
+
+        # Fusionner : les nouvelles entrées remplacent les anciennes pour le même filename
+        for entry in report.to_dict()["entries"]:
+            existing_entries[entry["filename"]] = entry
+
+        merged_data = {
+            "entries": list(existing_entries.values()),
+            "exact_duplicates": report.exact_duplicates,
+            "content_duplicates": report.content_duplicates,
+            "unique_files": report.unique_files,
+            "tokens_saved": report.tokens_saved,
+        }
+        save_json(self.index_path, merged_data)
 
     def check_duplicate(self, extraction: ExtractionResult) -> DeduplicationEntry:
         """Vérifie si un document est un doublon.
@@ -138,6 +163,7 @@ class CorpusDeduplicator:
                 report.tokens_saved += len(extraction.text) // 4  # Estimation
             elif entry.status == "doublon_probable":
                 report.content_duplicates += 1
+                report.tokens_saved += len(extraction.text) // 4  # Estimation
             else:
                 report.unique_files += 1
                 self.register(entry)

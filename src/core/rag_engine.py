@@ -309,7 +309,7 @@ class RAGEngine:
         if results and results["documents"] and results["documents"][0]:
             for i, doc in enumerate(results["documents"][0]):
                 distance = results["distances"][0][i] if results["distances"] else 0
-                similarity = 1.0 - (distance / 2.0)
+                similarity = 1.0 - distance
 
                 metadata = results["metadatas"][0][i] if results["metadatas"] else {}
                 token_estimate = metadata.get("token_estimate", metadata.get("token_count", len(doc) // 4))
@@ -481,7 +481,7 @@ class RAGEngine:
         if results and results["documents"] and results["documents"][0]:
             for i, doc in enumerate(results["documents"][0]):
                 distance = results["distances"][0][i] if results["distances"] else 0
-                similarity = 1.0 - (distance / 2.0)
+                similarity = 1.0 - distance
                 metadata = results["metadatas"][0][i] if results["metadatas"] else {}
 
                 candidates.append(ScoredChunk(
