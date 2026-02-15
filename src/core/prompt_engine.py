@@ -135,7 +135,9 @@ class PromptEngine:
         if corpus_chunks:
             corpus_parts = []
             for i, chunk in enumerate(corpus_chunks):
-                corpus_parts.append(f"[Source {i + 1}: {chunk.source_file}]\n{chunk.text}")
+                source = getattr(chunk, "source_file", "inconnu")
+                text = getattr(chunk, "text", str(chunk))
+                corpus_parts.append(f"[Source {i + 1}: {source}]\n{text}")
             corpus_content = "\n\n---\n\n".join(corpus_parts)
         else:
             corpus_content = "Aucun corpus source fourni. Rédige à partir de tes connaissances générales."

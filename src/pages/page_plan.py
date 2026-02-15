@@ -159,8 +159,10 @@ def _render_view_plan(state):
     col1, col2, col3 = st.columns(3)
     col1.metric("Sections", len(plan.sections))
     col2.metric("Pages cibles", target_pages or "Auto")
-    if plan.objective:
-        col3.metric("Objectif", plan.objective[:30] + "..." if len(plan.objective or "") > 30 else plan.objective)
+    objective_text = plan.objective or ""
+    if objective_text:
+        display_obj = objective_text[:30] + "..." if len(objective_text) > 30 else objective_text
+        col3.metric("Objectif", display_obj)
 
     st.markdown("---")
 

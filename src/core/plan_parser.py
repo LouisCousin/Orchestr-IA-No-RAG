@@ -118,12 +118,19 @@ class PlanParser:
         if not lines:
             return plan
 
-        # Détecter le titre du document (première ligne significative)
-        plan.title = lines[0] if lines else ""
-
         sections = self._detect_sections(lines)
         if sections:
             plan.sections = sections
+            # Détecter le titre du document : utiliser la première ligne
+            # uniquement si elle n'a pas été parsée comme section.
+            first_line = lines[0]
+            first_section_matched = False
+            for pattern, _ in self.HEADING_PATTERNS:
+                if re.match(pattern, first_line):
+                    first_section_matched = True
+                    break
+            if not first_section_matched:
+                plan.title = first_line
         else:
             # Fallback : chaque ligne non vide est une section de niveau 1
             plan.sections = self._fallback_parse(lines)

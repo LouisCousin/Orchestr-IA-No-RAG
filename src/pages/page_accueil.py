@@ -1,5 +1,6 @@
 """Page d'accueil — Création et gestion de projets."""
 
+import copy
 import streamlit as st
 from pathlib import Path
 from datetime import datetime
@@ -75,7 +76,7 @@ def _render_new_project():
         ensure_dir(project_dir / "corpus")
 
         # Charger la configuration du profil (d'abord le profil, puis les choix utilisateur)
-        config = st.session_state.config.copy()
+        config = copy.deepcopy(st.session_state.config)
 
         # Aplatir les paramètres de génération depuis la config par défaut
         # (la config YAML les imbrique sous "generation:" et utilise "default_model")

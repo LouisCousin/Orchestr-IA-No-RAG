@@ -233,7 +233,11 @@ class Orchestrator:
                 )
                 continue
 
-            self.state.current_section_index = i
+            # Stocker l'index absolu dans plan.sections (pas l'index filtré)
+            try:
+                self.state.current_section_index = plan.sections.index(section)
+            except ValueError:
+                self.state.current_section_index = i
             section.status = "generating"
             self.activity_log.info(
                 f"[Passe {pass_number}] Section {section.id}: {section.title}",
@@ -259,7 +263,8 @@ class Orchestrator:
 
                     if not assessment.should_generate:
                         section.status = "deferred"
-                        self.state.deferred_sections.append(section.id)
+                        if section.id not in self.state.deferred_sections:
+                            self.state.deferred_sections.append(section.id)
                         self.activity_log.warning(assessment.message, section=section.id)
                         self.save_state()
                         continue

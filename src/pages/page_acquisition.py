@@ -118,8 +118,10 @@ def _render_url_acquisition(corpus_dir: Path):
         if url_file:
             temp_path = corpus_dir / f"_temp_{url_file.name}"
             temp_path.write_bytes(url_file.getvalue())
-            acquirer.acquire_urls_from_file(temp_path, report)
-            temp_path.unlink()
+            try:
+                acquirer.acquire_urls_from_file(temp_path, report)
+            finally:
+                temp_path.unlink(missing_ok=True)
 
         # URLs saisies
         if urls_text.strip():

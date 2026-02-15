@@ -48,7 +48,7 @@ init_session_state()
 def render_sidebar():
     """Affiche la sidebar de navigation."""
     with st.sidebar:
-        st.image("https://via.placeholder.com/200x60?text=Orchestr'IA", width=200)
+        st.markdown("## Orchestr'IA")
         st.markdown("---")
 
         # Navigation

@@ -286,7 +286,29 @@ def _run_generation(state, provider, tracker):
                 section.generated_content = response.content
 
                 if not is_refinement:
-                    summary = response.content[:200] + "..."
+                    # Générer un résumé par l'IA pour un meilleur contexte inter-sections
+                    try:
+                        summary_prompt = orchestrator.prompt_engine.build_summary_prompt(
+                            section.title, response.content
+                        )
+                        summary_response = provider.generate(
+                            prompt=summary_prompt,
+                            system_prompt=orchestrator.prompt_engine.build_system_prompt(),
+                            model=state.config.get("model", provider.get_default_model()),
+                            temperature=0.3,
+                            max_tokens=200,
+                        )
+                        summary = summary_response.content.strip()
+                        tracker.record(
+                            section_id=section.id,
+                            model=state.config.get("model", provider.get_default_model()),
+                            provider=provider.name,
+                            input_tokens=summary_response.input_tokens,
+                            output_tokens=summary_response.output_tokens,
+                            task_type="summary",
+                        )
+                    except Exception:
+                        summary = response.content[:200] + "..."
                     state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
 
                 task_label = "raffinée" if is_refinement else "générée"

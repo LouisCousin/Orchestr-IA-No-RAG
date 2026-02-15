@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger("orchestria")
 
@@ -70,13 +70,13 @@ class CheckpointManager:
         self.history: list[CheckpointResult] = []
         self._pending_checkpoint: Optional[dict] = None
 
-    def should_pause(self, checkpoint_type: str) -> bool:
+    def should_pause(self, checkpoint_type: Union["CheckpointType", str]) -> bool:
         """Vérifie si le pipeline doit s'arrêter à ce checkpoint."""
         return self.config.is_enabled(checkpoint_type)
 
     def create_checkpoint(
         self,
-        checkpoint_type: str,
+        checkpoint_type: Union["CheckpointType", str],
         content: Any,
         section_id: Optional[str] = None,
         metadata: Optional[dict] = None,
