@@ -121,6 +121,7 @@ class Orchestrator:
         if self.rag_engine is not None:
             return
         try:
+            import chromadb  # noqa: F401 – check availability before creating engine
             from src.core.rag_engine import RAGEngine
             persist_dir = self.project_dir / "chromadb"
             self.rag_engine = RAGEngine(
