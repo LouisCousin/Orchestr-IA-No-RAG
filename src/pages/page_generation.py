@@ -250,6 +250,9 @@ def _run_generation(state, provider, tracker):
     )
     orchestrator.state = state
 
+    # Stocker l'orchestrateur en session (Bug #1 fix)
+    st.session_state["orchestrator"] = orchestrator
+
     # Extraction du corpus si nécessaire
     if not state.corpus:
         corpus_dir = project_dir / "corpus"

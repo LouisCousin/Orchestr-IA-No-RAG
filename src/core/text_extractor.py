@@ -126,7 +126,14 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict]]:
         (s.get("page") or 0 for s in sections), default=1
     )
 
-    return full_text, page_count, sections
+    # Extract title from first heading/title element
+    title = None
+    for s in sections:
+        if s.get("level", 0) >= 1:
+            title = s["text"].strip()
+            break
+
+    return full_text, page_count, sections, title
 
 
 def _extract_pdf_pymupdf(path: Path) -> tuple[str, int]:
@@ -190,11 +197,13 @@ def extract_pdf(path: Path) -> ExtractionResult:
         try:
             if lib_name == "docling":
                 # Docling retourne aussi la structure sémantique
-                text, page_count, structure = _extract_pdf_docling(path)
+                text, page_count, structure, title = _extract_pdf_docling(path)
                 if text.strip():
                     logger.info(f"PDF extrait avec docling: {path.name} ({page_count} pages, {len(structure)} éléments)")
                     result = _make_result(path, text=text, page_count=page_count, method="docling", status="success")
                     result.structure = structure
+                    if title:
+                        result.metadata["title"] = title
                     return result
                 else:
                     logger.warning(f"Extraction vide avec docling pour {path.name}, tentative suivante...")
@@ -225,6 +234,7 @@ def extract_docx(path: Path) -> ExtractionResult:
         doc = Document(str(path))
         paragraphs = []
         structure = []
+        title = None
         for para in doc.paragraphs:
             if para.text.strip():
                 paragraphs.append(para.text)
@@ -241,6 +251,17 @@ def extract_docx(path: Path) -> ExtractionResult:
                         "page": None,
                         "level": level,
                     })
+                    if title is None:
+                        title = para.text.strip()
+                elif style_name == "Title":
+                    structure.append({
+                        "text": para.text,
+                        "type": "title",
+                        "page": None,
+                        "level": 1,
+                    })
+                    if title is None:
+                        title = para.text.strip()
                 else:
                     structure.append({
                         "text": para.text,
@@ -253,6 +274,8 @@ def extract_docx(path: Path) -> ExtractionResult:
         result = _make_result(path, text=text, page_count=page_count, method="python-docx", status="success")
         if structure:
             result.structure = structure
+        if title:
+            result.metadata["title"] = title
         return result
     except Exception as e:
         return _make_result(path, text="", page_count=0, method="python-docx", status="failed", error=str(e))
@@ -274,6 +297,16 @@ def extract_html(path_or_text: Path | str) -> ExtractionResult:
 
         soup = BeautifulSoup(html_content, "html.parser")
 
+        # Extract title from <title> tag or first <h1>
+        title = None
+        title_tag = soup.find("title")
+        if title_tag and title_tag.string:
+            title = title_tag.string.strip()
+        if not title:
+            h1_tag = soup.find("h1")
+            if h1_tag:
+                title = h1_tag.get_text(strip=True)
+
         for tag in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]):
             tag.decompose()
 
@@ -284,7 +317,10 @@ def extract_html(path_or_text: Path | str) -> ExtractionResult:
         page_count = max(1, len(text) // 3000)
 
         if source_path:
-            return _make_result(source_path, text=text, page_count=page_count, method="beautifulsoup", status="success")
+            result = _make_result(source_path, text=text, page_count=page_count, method="beautifulsoup", status="success")
+            if title:
+                result.metadata["title"] = title
+            return result
         else:
             return ExtractionResult(
                 text=text, page_count=page_count,

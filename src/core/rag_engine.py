@@ -219,6 +219,7 @@ class RAGEngine:
                 documents.append(chunk.text)
                 metadatas.append({
                     "doc_id": chunk.doc_id,
+                    "source_file": chunk.doc_id,
                     "page_number": chunk.page_number,
                     "section_title": chunk.section_title,
                     "chunk_index": chunk.chunk_index,
@@ -393,7 +394,7 @@ class RAGEngine:
                     "doc_id": sc.doc_id,
                     "chunk_id": sc.chunk_id,
                 })
-                reranked_scores.append(sc.cosine_score)
+                reranked_scores.append(sc.rerank_score if sc.rerank_score > 0 else sc.cosine_score)
 
             return reranked_chunks, reranked_scores
         except ImportError:
