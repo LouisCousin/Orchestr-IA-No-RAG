@@ -1,0 +1,39 @@
+# Cybersécurité en PME : enjeux et stratégies de protection
+
+## Introduction
+
+Les petites et moyennes entreprises (PME) sont devenues des cibles privilégiées des cyberattaques. Contrairement aux grandes entreprises qui disposent de départements informatiques dédiés et de budgets conséquents pour la sécurité, les PME combinent souvent une surface d'attaque étendue avec des moyens de protection limités. Selon l'ANSSI, 43 % des cyberattaques en France visent des PME, et 60 % de celles qui subissent une attaque majeure cessent leur activité dans les six mois suivants.
+
+## Le paysage des menaces
+
+Les menaces cybernétiques auxquelles font face les PME sont variées et en constante évolution. Le ransomware (rançongiciel) reste la menace numéro un, avec des attaques qui chiffrent les données de l'entreprise et exigent une rançon pour leur restitution. Les montants demandés varient de quelques milliers à plusieurs centaines de milliers d'euros, rendant ces attaques potentiellement fatales pour une petite structure.
+
+Le phishing (hameçonnage) constitue le vecteur d'infection le plus courant. Les attaquants envoient des emails frauduleux imitant des partenaires commerciaux, des banques ou des administrations pour inciter les employés à divulguer leurs identifiants ou à cliquer sur des liens malveillants. Les campagnes de spear-phishing, ciblant spécifiquement les dirigeants ou les comptables, sont particulièrement redoutables.
+
+Les attaques par compromission de la chaîne d'approvisionnement représentent une menace croissante. En compromettant un fournisseur de logiciels ou de services utilisé par de nombreuses PME, les attaquants peuvent atteindre simultanément des centaines de victimes.
+
+## Les vulnérabilités spécifiques des PME
+
+Plusieurs facteurs rendent les PME particulièrement vulnérables. Le manque de sensibilisation du personnel constitue la première faille : un employé qui clique sur un lien malveillant ou qui utilise un mot de passe faible peut compromettre l'ensemble du système d'information. L'absence de politique de sécurité formalisée, fréquente dans les structures de moins de 50 salariés, aggrave ce problème.
+
+L'obsolescence des systèmes est un autre facteur critique. De nombreuses PME utilisent des logiciels non mis à jour, voire des systèmes d'exploitation en fin de vie, qui présentent des vulnérabilités connues et exploitables. Le budget limité alloué à la maintenance informatique explique souvent cette situation.
+
+La gestion des accès est également problématique. Le partage de comptes, l'absence d'authentification multifacteur et les droits d'administration trop largement distribués facilitent la progression des attaquants une fois qu'ils ont pénétré le réseau.
+
+## Stratégies de protection
+
+La mise en place d'une stratégie de cybersécurité adaptée aux PME repose sur plusieurs piliers fondamentaux. La sensibilisation régulière des collaborateurs par des formations et des exercices de simulation de phishing constitue le premier rempart. Des solutions comme KnowBe4 ou Cofense permettent d'organiser ces campagnes de manière automatisée.
+
+La sauvegarde des données selon la règle du 3-2-1 (trois copies, sur deux supports différents, dont une hors site) représente la meilleure assurance contre les ransomwares. Les sauvegardes doivent être testées régulièrement pour garantir leur intégrité.
+
+L'adoption d'une solution de détection et de réponse aux menaces (EDR) remplace avantageusement les antivirus traditionnels. Ces outils surveillent en permanence les comportements suspects sur les postes de travail et peuvent bloquer automatiquement les attaques.
+
+## Le cadre réglementaire
+
+Le RGPD impose aux PME des obligations strictes en matière de protection des données personnelles. En cas de violation de données, l'entreprise doit notifier la CNIL dans les 72 heures et informer les personnes concernées si le risque est élevé. Les sanctions peuvent atteindre 4 % du chiffre d'affaires annuel.
+
+La directive NIS2, entrée en vigueur en 2024, élargit le périmètre des entreprises soumises à des obligations de cybersécurité. De nombreuses PME sous-traitantes de secteurs critiques sont désormais concernées et doivent mettre en place des mesures de sécurité renforcées.
+
+## Conclusion
+
+La cybersécurité n'est plus un luxe réservé aux grandes entreprises. Les PME doivent intégrer cette dimension dans leur stratégie globale, en commençant par les mesures les plus fondamentales : sensibilisation, sauvegardes, mises à jour et gestion des accès. L'investissement dans la cybersécurité doit être perçu comme une assurance essentielle à la pérennité de l'entreprise.

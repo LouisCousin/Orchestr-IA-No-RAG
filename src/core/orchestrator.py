@@ -115,6 +115,8 @@ class Orchestrator:
         self.rag_engine = None
         self.conditional_generator = None
         self.state: Optional[ProjectState] = None
+        self._metadata_store = None  # Phase 2.5 : MetadataStore SQLite
+        self._last_plan_context = None  # Phase 2.5 : dernier PlanContext pour affichage UI
 
     def _init_rag(self) -> None:
         """Initialise le moteur RAG si nécessaire."""
@@ -126,8 +128,9 @@ class Orchestrator:
             persist_dir = self.project_dir / "chromadb"
             self.rag_engine = RAGEngine(
                 persist_dir=persist_dir,
-                top_k=self.config.get("rag_top_k", 7),
-                relevance_threshold=self.config.get("rag_relevance_threshold", 0.3),
+                top_k=self.config.get("rag", {}).get("top_k", self.config.get("rag_top_k", 10)),
+                relevance_threshold=self.config.get("rag", {}).get("relevance_threshold", self.config.get("rag_relevance_threshold", 0.3)),
+                config=self.config,  # Phase 2.5 : transmet toute la config
             )
         except ImportError:
             logger.warning("ChromaDB non disponible, RAG désactivé")
@@ -163,7 +166,10 @@ class Orchestrator:
         return self.state
 
     def index_corpus_rag(self) -> int:
-        """Indexe le corpus dans ChromaDB pour le RAG.
+        """Indexe le corpus dans ChromaDB avec chunking sémantique (Phase 2.5).
+
+        Utilise le pipeline : ExtractionResult → semantic_chunker → index_corpus_semantic.
+        Fallback sur l'ancien index_corpus() si semantic_chunker échoue.
 
         Returns:
             Nombre de blocs indexés.
@@ -172,6 +178,66 @@ class Orchestrator:
         if not self.rag_engine or not self.state or not self.state.corpus:
             return 0
 
+        # Phase 2.5 : tenter le chunking sémantique
+        use_semantic = self.config.get("rag", {}).get("chunking", {}).get("strategy", "semantic") == "semantic"
+
+        if use_semantic:
+            try:
+                from src.core.semantic_chunker import chunk_document
+                from src.core.metadata_store import MetadataStore, DocumentMetadata
+
+                # Initialiser le MetadataStore SQLite
+                metadata_store = MetadataStore(str(self.project_dir))
+
+                # Paramètres de chunking depuis la config
+                chunking_config = self.config.get("rag", {}).get("chunking", {})
+                max_chunk_tokens = chunking_config.get("max_chunk_tokens", 800)
+                min_chunk_tokens = chunking_config.get("min_chunk_tokens", 100)
+                overlap_sentences = chunking_config.get("overlap_sentences", 2)
+
+                chunks_by_doc = {}
+                for ext in self.state.corpus.extractions:
+                    doc_id = ext.hash_text or ext.source_filename
+
+                    # Enregistrer le document dans SQLite
+                    doc_meta = DocumentMetadata(
+                        doc_id=doc_id,
+                        filepath=str(ext.source_filename),
+                        filename=ext.source_filename,
+                        title=ext.metadata.get("title") if ext.metadata else None,
+                        page_count=ext.page_count,
+                        token_count=ext.word_count,
+                        char_count=ext.char_count,
+                        word_count=ext.word_count,
+                        extraction_method=ext.extraction_method,
+                        extraction_status=ext.status,
+                        hash_binary=ext.hash_binary,
+                        hash_textual=ext.hash_text,
+                    )
+                    metadata_store.add_document(doc_meta)
+
+                    # Chunking sémantique
+                    chunks = chunk_document(
+                        ext,
+                        doc_id=doc_id,
+                        max_chunk_tokens=max_chunk_tokens,
+                        min_chunk_tokens=min_chunk_tokens,
+                        overlap_sentences=overlap_sentences,
+                    )
+                    if chunks:
+                        chunks_by_doc[doc_id] = chunks
+
+                if chunks_by_doc:
+                    count = self.rag_engine.index_corpus_semantic(chunks_by_doc, metadata_store)
+                    self.activity_log.info(f"Corpus indexé (sémantique) : {count} blocs")
+                    # Stocker metadata_store pour réutilisation (plan_corpus_linker, etc.)
+                    self._metadata_store = metadata_store
+                    return count
+
+            except Exception as e:
+                logger.warning(f"Chunking sémantique échoué, fallback chunking fixe : {e}")
+
+        # Fallback : ancien chunking fixe (Phase 2)
         extractions = []
         for ext in self.state.corpus.extractions:
             extractions.append({
@@ -464,19 +530,66 @@ class Orchestrator:
     ) -> NormalizedPlan:
         """Génère un plan à partir d'un objectif en langage naturel.
 
+        Phase 2.5 : utilise plan_corpus_linker pour analyser le corpus
+        et produire un plan basé sur le contenu réel des documents.
+
         Args:
             objective: Description de l'objectif du document.
             target_pages: Nombre de pages cible.
-            corpus: Corpus structuré optionnel. Si fourni, des extraits
-                représentatifs de chaque document seront injectés dans le
-                prompt pour guider la structure du plan.
+            corpus: Corpus structuré optionnel.
         """
         from src.core.plan_parser import PlanParser
 
-        corpus_digest = corpus.get_corpus_digest() if corpus else None
-        prompt = self.prompt_engine.build_plan_generation_prompt(
-            objective, target_pages, corpus_digest=corpus_digest,
+        # Phase 2.5 : tenter la liaison plan-corpus si le RAG est indexé
+        plan_corpus_enabled = self.config.get("plan_corpus_linking", {}).get("enabled", True)
+        use_plan_corpus = (
+            plan_corpus_enabled
+            and self._metadata_store is not None
+            and self.rag_engine is not None
         )
+
+        if use_plan_corpus:
+            try:
+                from src.core.plan_corpus_linker import (
+                    link_plan_to_corpus,
+                    format_plan_context_for_prompt,
+                    PLAN_PROMPT_WITH_CORPUS,
+                )
+
+                plan_context = link_plan_to_corpus(
+                    objective=objective,
+                    metadata_store=self._metadata_store,
+                    collection=self.rag_engine.collection,
+                    config=self.config,
+                    provider=self.provider,
+                )
+
+                corpus_context = format_plan_context_for_prompt(plan_context)
+                prompt = PLAN_PROMPT_WITH_CORPUS.format(
+                    objective=objective,
+                    corpus_context=corpus_context,
+                    target_pages=target_pages or "automatique",
+                )
+
+                # Stocker le plan_context pour l'affichage UI
+                self._last_plan_context = plan_context
+
+                logger.info(
+                    f"Plan-corpus linker : {len(plan_context.themes)} thèmes, "
+                    f"{len(plan_context.coverage)} scores de couverture"
+                )
+
+            except Exception as e:
+                logger.warning(f"Plan-corpus linker échoué, fallback digest : {e}")
+                use_plan_corpus = False
+
+        if not use_plan_corpus:
+            # Fallback : ancien mécanisme (corpus digest textuel)
+            corpus_digest = corpus.get_corpus_digest() if corpus else None
+            prompt = self.prompt_engine.build_plan_generation_prompt(
+                objective, target_pages, corpus_digest=corpus_digest,
+            )
+
         system_prompt = self.prompt_engine.build_system_prompt()
 
         response = self.provider.generate(
