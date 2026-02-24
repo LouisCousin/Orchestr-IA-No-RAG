@@ -186,8 +186,7 @@ class PromptEngine:
         else:
             corpus_content = (
                 "Aucun corpus source disponible pour cette section. "
-                "Tu peux utiliser tes connaissances générales, mais signale "
-                "systématiquement les passages non sourcés avec le marqueur "
+                "Signale chaque point nécessitant une source avec le marqueur "
                 "{{NEEDS_SOURCE: [description du point]}}."
             )
 
@@ -235,8 +234,7 @@ class PromptEngine:
         else:
             corpus_content = (
                 "Aucun corpus source disponible pour cette section. "
-                "Tu peux utiliser tes connaissances générales, mais signale "
-                "systématiquement les passages non sourcés avec le marqueur "
+                "Signale chaque point nécessitant une source avec le marqueur "
                 "{{NEEDS_SOURCE: [description du point]}}."
             )
 

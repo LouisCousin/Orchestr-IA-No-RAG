@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.utils.config import load_yaml, save_yaml, ROOT_DIR
+from src.utils.providers_registry import get_default_model
 
 logger = logging.getLogger("orchestria")
 
@@ -214,7 +215,7 @@ class ProfileManager:
             return {}
 
         return {
-            "model": profile.get("model", "gpt-4o"),
+            "model": profile.get("model", get_default_model(profile.get("default_provider", "openai"))),
             "temperature": profile.get("generation", {}).get("temperature", 0.7),
             "max_tokens": profile.get("generation", {}).get("max_tokens", 4096),
             "target_pages": profile.get("target_pages"),

@@ -78,7 +78,8 @@ class TestBuildSectionPrompt:
             corpus_chunks=[],
             previous_summaries=[],
         )
-        assert "connaissances générales" in prompt.lower()
+        assert "aucun corpus" in prompt.lower()
+        assert "NEEDS_SOURCE" in prompt
 
     def test_with_page_budget(self, engine, sample_plan):
         section = sample_plan.sections[0]
@@ -306,7 +307,7 @@ class TestCorpusEmptyFallback:
             corpus_chunks=[], previous_summaries=[],
         )
         assert "NEEDS_SOURCE" in prompt
-        assert "connaissances générales" in prompt.lower()
+        assert "aucun corpus" in prompt.lower()
 
 
 class TestBuildSummaryPrompt:

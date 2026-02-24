@@ -15,6 +15,7 @@ from docx.enum.section import WD_ORIENT
 
 from src.core.plan_parser import NormalizedPlan, PlanSection
 from src.utils.file_utils import ensure_dir
+from src.utils.reference_cleaner import clean_source_references
 
 logger = logging.getLogger("orchestria")
 
@@ -117,11 +118,17 @@ class ExportEngine:
         ensure_dir(output_path.parent)
         doc = Document()
 
+        # Phase 3 : Nettoyage des [Source N] résiduels avant export
+        cleaned_sections = {
+            sid: clean_source_references(content)
+            for sid, content in generated_sections.items()
+        }
+
         self._setup_styles(doc)
         self._setup_margins(doc)
         self._add_cover_page(doc, plan, project_name)
         self._add_table_of_contents(doc)
-        self._add_sections(doc, plan, generated_sections)
+        self._add_sections(doc, plan, cleaned_sections)
 
         doc.save(str(output_path))
         logger.info(f"Document DOCX exporté : {output_path}")
