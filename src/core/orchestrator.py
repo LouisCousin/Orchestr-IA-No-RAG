@@ -156,6 +156,8 @@ class Orchestrator:
             import chromadb  # noqa: F401 – check availability before creating engine
             from src.core.rag_engine import RAGEngine
             persist_dir = self.project_dir / "chromadb"
+            ensure_dir(persist_dir)
+            logger.info(f"Initialisation ChromaDB — répertoire de persistance : {persist_dir}")
             self.rag_engine = RAGEngine(
                 persist_dir=persist_dir,
                 top_k=self.config.get("rag", {}).get("top_k", self.config.get("rag_top_k", 10)),
@@ -259,6 +261,11 @@ class Orchestrator:
 
                 if chunks_by_doc:
                     count = self.rag_engine.index_corpus_semantic(chunks_by_doc, metadata_store)
+                    persist_dir = self.project_dir / "chromadb"
+                    logger.info(
+                        f"Corpus indexé (sémantique) : {count} blocs dans {persist_dir}, "
+                        f"métadonnées dans {metadata_store.db_path}"
+                    )
                     self.activity_log.info(f"Corpus indexé (sémantique) : {count} blocs")
                     # Stocker metadata_store pour réutilisation (plan_corpus_linker, etc.)
                     self._metadata_store = metadata_store
@@ -427,7 +434,9 @@ class Orchestrator:
                     task_type="refinement" if is_refinement else "generation",
                 )
 
-                content = response.content
+                # Post-traitement : nettoyage des références [Source N] résiduelles
+                from src.utils.reference_cleaner import clean_source_references
+                content = clean_source_references(response.content)
                 self.state.generated_sections[section.id] = content
                 section.status = "generated"
                 section.generated_content = content

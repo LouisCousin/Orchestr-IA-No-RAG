@@ -250,18 +250,28 @@ class ExportEngine:
 
             content = generated_sections.get(section.id, "")
             if content:
-                self._add_content(doc, content)
+                self._add_content(doc, content, section_level=heading_level)
             else:
                 p = doc.add_paragraph("[Section non générée]")
                 p.runs[0].font.italic = True
                 p.runs[0].font.color.rgb = RGBColor(180, 180, 180)
 
-    def _add_content(self, doc: Document, content: str) -> None:
+    def _add_content(self, doc: Document, content: str, section_level: int = 1) -> None:
         """Parse le contenu markdown et l'ajoute au document DOCX."""
         blocks = self._split_into_blocks(content)
         for block_type, block_text in blocks:
             if block_type == "table":
                 self._add_table(doc, block_text)
+            elif block_type.startswith("heading_"):
+                # En-tête Markdown détecté (## Titre, ### Sous-titre, etc.)
+                heading_level = int(block_type.split("_")[1])
+                # Positionner relativement au niveau hiérarchique de la section
+                effective_level = min(heading_level + section_level, 4)
+                heading = doc.add_heading(block_text, level=effective_level)
+                # Appliquer la charte graphique
+                for run in heading.runs:
+                    run.font.name = self.styling["font_title"]
+                    run.font.color.rgb = hex_to_rgb(self.styling["secondary_color"])
             elif block_type == "bullet_list":
                 for line in block_text.split("\n"):
                     line = line.strip().lstrip("-•").strip()
@@ -296,6 +306,17 @@ class ExportEngine:
         while i < len(lines):
             line = lines[i]
             stripped = line.strip()
+
+            # Détection des en-têtes Markdown (# Titre, ## Sous-titre, etc.)
+            heading_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+            if heading_match:
+                flush()
+                level = len(heading_match.group(1))
+                text = heading_match.group(2).strip()
+                blocks.append((f"heading_{level}", text))
+                current_type = "paragraph"
+                i += 1
+                continue
 
             # Détection d'un tableau markdown
             if self._is_table_row(stripped) and i + 1 < len(lines) and self._is_separator_row(lines[i + 1].strip()):

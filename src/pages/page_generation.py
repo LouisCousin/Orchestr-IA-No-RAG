@@ -10,27 +10,19 @@ from src.core.orchestrator import Orchestrator
 from src.core.corpus_extractor import CorpusExtractor
 from src.core.cost_tracker import CostTracker
 from src.core.checkpoint_manager import CheckpointManager, CheckpointConfig
+from src.utils.providers_registry import PROVIDERS_INFO
+from src.utils.reference_cleaner import clean_source_references
 
 PROJECTS_DIR = ROOT_DIR / "projects"
-
-PROVIDERS_INFO = {
-    "openai": {
-        "models": ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-        "default_model": "gpt-4o",
-    },
-    "anthropic": {
-        "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-35-20241022"],
-        "default_model": "claude-sonnet-4-5-20250514",
-    },
-    "google": {
-        "models": ["gemini-3.0-pro", "gemini-3.0-flash"],
-        "default_model": "gemini-3.0-flash",
-    },
-}
 
 
 def render():
     st.title("Génération du document")
+    st.info(
+        "**Étape 4/5** — Lancez la génération du contenu section par section. L'IA "
+        "utilise votre corpus et le plan défini pour produire chaque section. "
+        "Vous pouvez relire et modifier chaque section après génération."
+    )
     st.markdown("---")
 
     if not st.session_state.project_state:
@@ -47,6 +39,11 @@ def render():
     if not provider or not provider.is_available():
         st.warning("Fournisseur IA non configuré. Rendez-vous sur la page Configuration.")
         return
+
+    # Bouton retour en haut
+    if st.button("← Retour au plan"):
+        st.session_state.current_page = "plan"
+        st.rerun()
 
     _render_generation_config(state, provider)
     st.markdown("---")
@@ -71,9 +68,16 @@ def _render_generation_config(state, provider):
 
     # Liste des modèles depuis le provider ou fallback
     models = provider.list_models() if provider else info.get("models", [])
-    current_model = config.get("model", provider.get_default_model())
-    if current_model not in models:
+
+    # Lecture stricte du modèle depuis la config (ne jamais écraser silencieusement)
+    if "model" not in config:
+        st.warning("Aucun modèle configuré. Veuillez repasser par la page Configuration pour sélectionner un modèle.")
         current_model = models[0] if models else provider.get_default_model()
+    else:
+        current_model = config["model"]
+        if current_model not in models:
+            st.warning(f"Le modèle '{current_model}' n'est pas disponible pour le fournisseur actuel. Sélectionnez-en un autre.")
+            current_model = models[0] if models else provider.get_default_model()
 
     with st.expander("Ajuster la configuration", expanded=False):
         col1, col2 = st.columns(2)
@@ -364,9 +368,11 @@ def _run_generation(state, provider, tracker):
                     task_type="refinement" if is_refinement else "generation",
                 )
 
-                state.generated_sections[section.id] = response.content
+                # Post-traitement : nettoyage des références [Source N] résiduelles
+                cleaned_content = clean_source_references(response.content)
+                state.generated_sections[section.id] = cleaned_content
                 section.status = "generated"
-                section.generated_content = response.content
+                section.generated_content = cleaned_content
 
                 if not is_refinement:
                     # Générer un résumé par l'IA pour un meilleur contexte inter-sections

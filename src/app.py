@@ -52,21 +52,37 @@ def render_sidebar():
         st.markdown("## Orchestr'IA")
         st.markdown("---")
 
-        # Navigation
-        st.markdown("### Navigation")
-        pages = {
-            "accueil": "Accueil",
-            "configuration": "Configuration",
-            "acquisition": "Acquisition du corpus",
-            "plan": "Plan du document",
-            "generation": "Génération",
-            "export": "Export",
-        }
+        # Stepper visuel de navigation
+        st.markdown("### Pipeline")
+        stepper_pages = [
+            ("accueil", "Accueil"),
+            ("configuration", "1. Configuration"),
+            ("acquisition", "2. Acquisition"),
+            ("plan", "3. Plan"),
+            ("generation", "4. Génération"),
+            ("export", "5. Export"),
+        ]
 
-        for page_id, page_name in pages.items():
-            if st.button(page_name, key=f"nav_{page_id}", use_container_width=True):
+        current_page = st.session_state.current_page
+        state = st.session_state.get("project_state")
+        has_sections = state and state.generated_sections
+
+        for page_id, page_label in stepper_pages:
+            # Déterminer si l'étape est accessible
+            is_current = page_id == current_page
+            is_disabled = (page_id == "export" and not has_sections)
+
+            if is_current:
+                label = f"**▸ {page_label}**"
+            elif is_disabled:
+                label = f"~~{page_label}~~"
+            else:
+                label = page_label
+
+            if is_disabled:
+                st.markdown(f"  {label}", help="Générez des sections avant d'accéder à l'export")
+            elif st.button(label, key=f"nav_{page_id}", use_container_width=True):
                 # Persister l'état avant navigation
-                state = st.session_state.get("project_state")
                 project_id = st.session_state.get("current_project")
                 if state and project_id:
                     state_path = ROOT_DIR / "projects" / project_id / "state.json"

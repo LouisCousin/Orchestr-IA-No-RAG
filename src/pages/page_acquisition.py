@@ -10,6 +10,7 @@ from src.core.corpus_acquirer import CorpusAcquirer, AcquisitionReport
 from src.core.text_extractor import extract
 from src.core.corpus_deduplicator import CorpusDeduplicator
 from src.core.cost_tracker import CostTracker
+from src.utils.content_validator import is_antibot_page
 
 
 PROJECTS_DIR = ROOT_DIR / "projects"
@@ -17,6 +18,12 @@ PROJECTS_DIR = ROOT_DIR / "projects"
 
 def render():
     st.title("Acquisition du corpus")
+    st.info(
+        "**Étape 2/5** — Constituez votre corpus de sources. Uploadez des fichiers "
+        "(PDF, DOCX, etc.) ou saisissez des URLs. Ces documents serviront de base "
+        "factuelle pour la génération (RAG). Plus le corpus est riche et pertinent, "
+        "meilleur sera le document produit."
+    )
     st.markdown("---")
 
     if not st.session_state.project_state:
@@ -39,6 +46,10 @@ def render():
     # Récapitulatif du corpus
     st.markdown("---")
     _render_corpus_recap(corpus_dir)
+
+    # Inspection RAG
+    project_dir = PROJECTS_DIR / project_id
+    _render_rag_inspection(project_dir)
 
 
 def _render_file_upload(corpus_dir: Path):
@@ -158,10 +169,21 @@ def _render_corpus_recap(corpus_dir: Path):
             tokens = count_tokens(result.text) if result.text else 0
             dedup_entry = deduplicator.check_duplicate(result)
 
+            # Évaluation de la qualité du contenu
+            quality = "OK"
+            if result.text:
+                if is_antibot_page(result.text):
+                    quality = "Suspect"
+                elif len(result.text.strip()) < 200:
+                    quality = "Suspect"
+            elif not result.text:
+                quality = "Vide"
+
             documents_info.append({
                 "Fichier": f.name,
                 "Pages": result.page_count,
                 "Tokens": tokens,
+                "Qualité": quality,
                 "Statut extraction": result.status,
                 "Méthode": result.extraction_method,
                 "Taille (Ko)": round(result.source_size_bytes / 1024, 1),
@@ -203,6 +225,27 @@ def _render_corpus_recap(corpus_dir: Path):
                 f"la fenêtre de contexte du modèle {model} ({estimate['context_window']:,} tokens)."
             )
 
+    # Sources suspectes (anti-bot, contenu vide)
+    suspects = [d for d in documents_info if d["Qualité"] == "Suspect"]
+    if suspects:
+        st.markdown("---")
+        st.subheader("Sources suspectes")
+        st.warning(
+            f"{len(suspects)} source(s) détectée(s) comme suspecte(s) "
+            "(contenu anti-bot possible ou texte trop court). "
+            "Vérifiez le contenu ou supprimez les fichiers concernés."
+        )
+        for doc in suspects:
+            col_a, col_b = st.columns([4, 1])
+            with col_a:
+                st.markdown(f"**{doc['Fichier']}** — Contenu suspect (anti-bot ou texte < 200 caractères)")
+            with col_b:
+                if st.button("Supprimer", key=f"del_suspect_{doc['Fichier']}"):
+                    suspect_path = corpus_dir / doc["Fichier"]
+                    if suspect_path.exists():
+                        suspect_path.unlink()
+                    st.rerun()
+
     # Déduplication
     if duplicates > 0:
         st.markdown("---")
@@ -217,17 +260,23 @@ def _render_corpus_recap(corpus_dir: Path):
                         deduplicator.remove_duplicate(doc["Fichier"])
                         st.rerun()
 
-    # Bouton pour passer à l'étape suivante
+    # Navigation inter-étapes
     st.markdown("---")
-    if st.button("Continuer vers le plan", type="primary", use_container_width=True):
-        state = st.session_state.project_state
-        if state:
-            state.current_step = "plan"
-            project_id = st.session_state.current_project
-            if project_id:
-                save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
-        st.session_state.current_page = "plan"
-        st.rerun()
+    col_back, col_next = st.columns(2)
+    with col_back:
+        if st.button("← Retour à la configuration", use_container_width=True):
+            st.session_state.current_page = "configuration"
+            st.rerun()
+    with col_next:
+        if st.button("Continuer vers le plan →", type="primary", use_container_width=True):
+            state = st.session_state.project_state
+            if state:
+                state.current_step = "plan"
+                project_id = st.session_state.current_project
+                if project_id:
+                    save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+            st.session_state.current_page = "plan"
+            st.rerun()
 
 
 def _display_report(report: AcquisitionReport):
@@ -242,3 +291,100 @@ def _display_report(report: AcquisitionReport):
             st.markdown(f"**{status.source}** — {status.message}")
         else:
             st.markdown(f"**{status.source}** — {status.message}")
+
+
+def _render_rag_inspection(project_dir: Path):
+    """Section d'inspection du corpus RAG (chunks indexés)."""
+    chromadb_dir = project_dir / "chromadb"
+    metadata_db_path = project_dir / "metadata.db"
+
+    has_chromadb = chromadb_dir.exists() and any(chromadb_dir.iterdir()) if chromadb_dir.exists() else False
+    has_metadata = metadata_db_path.exists()
+
+    if not has_chromadb and not has_metadata:
+        return
+
+    with st.expander("Inspection du corpus RAG"):
+        # Informations de stockage
+        st.markdown("**Emplacements des données**")
+        st.code(f"ChromaDB : {chromadb_dir}\nMetadata SQLite : {metadata_db_path}")
+
+        col1, col2 = st.columns(2)
+
+        # Nombre de chunks ChromaDB
+        chroma_count = 0
+        if has_chromadb:
+            try:
+                import chromadb
+                client = chromadb.PersistentClient(path=str(chromadb_dir))
+                collection = client.get_or_create_collection("orchestria_corpus")
+                chroma_count = collection.count()
+            except Exception:
+                pass
+        col1.metric("Chunks ChromaDB", chroma_count)
+
+        # Nombre de chunks SQLite
+        sqlite_count = 0
+        if has_metadata:
+            try:
+                from src.core.metadata_store import MetadataStore
+                store = MetadataStore(str(project_dir))
+                sqlite_count = store.count_chunks()
+                store.close()
+            except Exception:
+                pass
+        col2.metric("Chunks SQLite", sqlite_count)
+
+        # Liste des chunks par document
+        if has_metadata and sqlite_count > 0:
+            st.markdown("**Chunks par document**")
+            try:
+                import pandas as pd
+                from src.core.metadata_store import MetadataStore
+                store = MetadataStore(str(project_dir))
+                all_chunks = store.get_all_chunks()
+                store.close()
+
+                if all_chunks:
+                    chunk_data = []
+                    for c in all_chunks[:100]:  # Limiter à 100 pour la performance
+                        chunk_data.append({
+                            "Document": c.get("doc_id", ""),
+                            "Chunk ID": c.get("chunk_id", ""),
+                            "Texte (extrait)": (c.get("text", "")[:200] + "...") if len(c.get("text", "")) > 200 else c.get("text", ""),
+                            "Page": c.get("page_number", ""),
+                            "Tokens": c.get("token_count", ""),
+                        })
+                    df = pd.DataFrame(chunk_data)
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    if len(all_chunks) > 100:
+                        st.caption(f"Affichage limité aux 100 premiers chunks sur {len(all_chunks)} au total.")
+            except Exception as e:
+                st.warning(f"Impossible de charger les chunks : {e}")
+
+        # Recherche test dans le RAG
+        if has_chromadb and chroma_count > 0:
+            st.markdown("**Recherche test**")
+            test_query = st.text_input("Requête de test", placeholder="Saisissez un terme pour tester la recherche RAG...")
+            if test_query and st.button("Tester la recherche"):
+                try:
+                    import chromadb
+                    client = chromadb.PersistentClient(path=str(chromadb_dir))
+                    collection = client.get_or_create_collection("orchestria_corpus")
+                    results = collection.query(
+                        query_texts=[test_query],
+                        n_results=min(5, chroma_count),
+                        include=["documents", "metadatas", "distances"],
+                    )
+                    if results and results["documents"] and results["documents"][0]:
+                        for i, doc in enumerate(results["documents"][0]):
+                            distance = results["distances"][0][i] if results["distances"] else 0
+                            similarity = 1.0 - distance
+                            metadata = results["metadatas"][0][i] if results["metadatas"] else {}
+                            source = metadata.get("source_file", metadata.get("doc_id", "inconnu"))
+                            st.markdown(f"**Résultat {i+1}** (score: {similarity:.3f}) — {source}")
+                            st.text(doc[:300] + ("..." if len(doc) > 300 else ""))
+                    else:
+                        st.info("Aucun résultat trouvé.")
+                except Exception as e:
+                    st.error(f"Erreur de recherche : {e}")
