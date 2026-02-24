@@ -80,6 +80,7 @@ pdf_extraction:
   coverage_threshold: 0.80           # Ratio min de pages couvertes avant rattrapage pymupdf
   disable_page_images: true          # Désactiver la génération d'images de pages
   disable_picture_classification: true  # Désactiver la classification d'images
+  disable_ocr: true                  # Désactiver l'OCR (inutile pour les PDF numériques)
 
 # ═══════════════════════════════════════════
 # Phase 2.5 — Pipeline RAG complet

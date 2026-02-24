@@ -108,6 +108,7 @@ def _load_pdf_extraction_config() -> dict:
         "coverage_threshold": pdf_cfg.get("coverage_threshold", 0.80),
         "disable_page_images": pdf_cfg.get("disable_page_images", True),
         "disable_picture_classification": pdf_cfg.get("disable_picture_classification", True),
+        "disable_ocr": pdf_cfg.get("disable_ocr", True),
     }
 
 
@@ -119,6 +120,7 @@ def _create_docling_converter(pdf_cfg: dict):
     from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 
     pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = not pdf_cfg.get("disable_ocr", True)
     pipeline_options.generate_page_images = not pdf_cfg["disable_page_images"]
     pipeline_options.generate_picture_images = not pdf_cfg.get("disable_picture_images", True)
     pipeline_options.do_picture_classification = not pdf_cfg["disable_picture_classification"]
@@ -196,6 +198,7 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
 
     # Déterminer le nombre total de pages
     total_pages = _get_pdf_page_count(path)
+    logger.info(f"PDF {path.name} : {total_pages} pages détectées, seuil batch = {batch_threshold}")
     if total_pages == 0:
         logger.warning(f"Impossible de déterminer le nombre de pages de {path.name}, conversion en une passe")
 
