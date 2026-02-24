@@ -26,9 +26,11 @@ ANTI_HALLUCINATION_BLOCK = """
    Cela signale à l'utilisateur qu'il doit compléter le corpus.
    NE REMPLACE PAS ce marqueur par du contenu inventé.
 
-3. ATTRIBUTION : Quand tu utilises une information d'un bloc source,
-   mentionne la source (ex: "Selon [Source 3]..." ou "D'après le
-   document X..."). Cela facilite la vérification.
+3. ATTRIBUTION : Quand tu utilises une information d'un document source,
+   cite-le par sa référence bibliographique complète au format APA
+   (ex: Dupont, 2024) ou, à défaut, par son nom de fichier
+   (ex: selon le document rapport_analyse.pdf). N'utilise JAMAIS de
+   numéro de source comme [Source 1] ou [Source 5].
 
 4. TRANSPARENCE : Si le corpus est insuffisant pour une section
    complète, écris une section plus courte plutôt que de compléter
@@ -68,6 +70,7 @@ Niveau hiérarchique : {section_level}
 Rédige le contenu de cette section en respectant les consignes ci-dessus.
 Le texte doit être structuré, professionnel et directement exploitable dans un document final.
 N'inclus pas le titre de la section dans ta réponse (il sera ajouté automatiquement).
+N'utilise pas de titres Markdown (# ou ##) dans ta réponse. Structure le contenu avec des sous-titres en gras (**Sous-titre**) si nécessaire.
 """
 
 PLAN_GENERATION_PROMPT = """À partir de l'objectif suivant, génère un plan structuré détaillé pour un document professionnel.
@@ -114,6 +117,7 @@ Améliore le brouillon ci-dessus en :
 - Corrigeant les erreurs factuelles, grammaticales ou stylistiques.
 - Respectant la longueur cible.
 - Conservant les éléments de qualité du brouillon.
+- N'utilisant pas de titres Markdown (# ou ##). Utilise des sous-titres en gras (**Sous-titre**) si nécessaire.
 Retourne uniquement la version améliorée, sans commentaires ni explications.
 """
 
@@ -171,14 +175,9 @@ class PromptEngine:
             f"- {s}" for s in previous_summaries[-5:]  # Limiter aux 5 derniers résumés
         )
 
-        # Corpus pertinent
+        # Corpus pertinent (regroupé par document source)
         if corpus_chunks:
-            corpus_parts = []
-            for i, chunk in enumerate(corpus_chunks):
-                source = getattr(chunk, "source_file", "inconnu")
-                text = getattr(chunk, "text", str(chunk))
-                corpus_parts.append(f"[Source {i + 1}: {source}]\n{text}")
-            corpus_content = "\n\n---\n\n".join(corpus_parts)
+            corpus_content = self._format_corpus_chunks_grouped(corpus_chunks)
         else:
             corpus_content = "Aucun corpus source fourni. Rédige à partir de tes connaissances générales."
 
@@ -222,12 +221,7 @@ class PromptEngine:
         )
 
         if corpus_chunks:
-            corpus_parts = []
-            for i, chunk in enumerate(corpus_chunks):
-                source = getattr(chunk, "source_file", "inconnu")
-                text = getattr(chunk, "text", str(chunk))
-                corpus_parts.append(f"[Source {i + 1}: {source}]\n{text}")
-            corpus_content = "\n\n---\n\n".join(corpus_parts)
+            corpus_content = self._format_corpus_chunks_grouped(corpus_chunks)
         else:
             corpus_content = "Aucun corpus source fourni."
 
@@ -338,3 +332,41 @@ class PromptEngine:
             f"Résume en 2-3 phrases le contenu principal de la section \"{section_title}\" "
             f"pour fournir du contexte aux sections suivantes du document :\n\n{content[:2000]}"
         )
+
+    @staticmethod
+    def _format_corpus_chunks_grouped(corpus_chunks: list) -> str:
+        """Regroupe les chunks par document source pour le prompt.
+
+        Au lieu de numéroter chaque chunk individuellement ([Source 1], [Source 2]...),
+        les regroupe par fichier source avec des références APA si disponibles.
+        """
+        from collections import OrderedDict
+
+        grouped = OrderedDict()
+        for chunk in corpus_chunks:
+            source = getattr(chunk, "source_file", "inconnu")
+            apa_ref = getattr(chunk, "apa_reference", None)
+            text = getattr(chunk, "text", str(chunk))
+            key = source
+            if key not in grouped:
+                grouped[key] = {"apa_reference": apa_ref, "extracts": []}
+            grouped[key]["extracts"].append(text)
+            # Prefer non-None apa_reference
+            if apa_ref and not grouped[key]["apa_reference"]:
+                grouped[key]["apa_reference"] = apa_ref
+
+        parts = []
+        for source_file, data in grouped.items():
+            # Build document header with APA reference if available
+            if data["apa_reference"]:
+                header = f"[Document : {data['apa_reference']}]"
+            else:
+                header = f"[Document : {source_file}]"
+
+            extracts = []
+            for i, ext_text in enumerate(data["extracts"], 1):
+                extracts.append(f"--- Extrait {i} ---\n{ext_text}")
+
+            parts.append(f"{header}\n" + "\n".join(extracts))
+
+        return "\n\n---\n\n".join(parts)

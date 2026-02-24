@@ -15,6 +15,10 @@ OUTPUT_DIR = ROOT_DIR / "output"
 
 def render():
     st.title("Export du document")
+    st.info(
+        "**Étape 5/5** — Exportez votre document au format DOCX. Vous pouvez "
+        "également exporter les métadonnées (coûts, couverture RAG) au format Excel."
+    )
     st.markdown("---")
 
     if not st.session_state.project_state:
@@ -27,12 +31,23 @@ def render():
         st.warning("Aucune section générée. Lancez d'abord la génération.")
         return
 
+    # Bouton retour
+    if st.button("← Retour à la génération"):
+        st.session_state.current_page = "generation"
+        st.rerun()
+
     _render_docx_export(state)
 
     # Récapitulatif en bas de page
     st.markdown("---")
     with st.expander("Récapitulatif du projet"):
         _render_recap(state)
+
+    # Bouton retour accueil
+    st.markdown("---")
+    if st.button("Retour à l'accueil", use_container_width=True):
+        st.session_state.current_page = "accueil"
+        st.rerun()
 
 
 def _render_docx_export(state):

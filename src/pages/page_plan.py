@@ -15,6 +15,11 @@ PROJECTS_DIR = ROOT_DIR / "projects"
 
 def render():
     st.title("Plan du document")
+    st.info(
+        "**Étape 3/5** — Définissez la structure de votre document. Importez un plan "
+        "existant ou laissez l'IA en générer un à partir de votre objectif. Vous "
+        "pourrez ajuster le plan manuellement avant de lancer la génération."
+    )
     st.markdown("---")
 
     if not st.session_state.project_state:

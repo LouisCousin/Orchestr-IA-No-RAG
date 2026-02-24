@@ -7,34 +7,10 @@ from src.core.checkpoint_manager import CheckpointConfig
 from src.core.cost_tracker import CostTracker
 from src.utils.config import ROOT_DIR
 from src.utils.file_utils import save_json
+from src.utils.providers_registry import PROVIDERS_INFO
 
 
 PROJECTS_DIR = ROOT_DIR / "projects"
-
-
-PROVIDERS_INFO = {
-    "openai": {
-        "label": "OpenAI",
-        "env_var": "OPENAI_API_KEY",
-        "placeholder": "sk-your-openai-api-key-here",
-        "models": ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-        "default_model": "gpt-4o",
-    },
-    "anthropic": {
-        "label": "Anthropic (Claude 4.5 / Opus 4.6)",
-        "env_var": "ANTHROPIC_API_KEY",
-        "placeholder": "sk-ant-your-anthropic-api-key-here",
-        "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-35-20241022"],
-        "default_model": "claude-sonnet-4-5-20250514",
-    },
-    "google": {
-        "label": "Google Gemini 3",
-        "env_var": "GOOGLE_API_KEY",
-        "placeholder": "your-google-api-key-here",
-        "models": ["gemini-3.0-pro", "gemini-3.0-flash"],
-        "default_model": "gemini-3.0-flash",
-    },
-}
 
 
 def _save_state(state):
@@ -61,6 +37,11 @@ def _create_provider(provider_name: str, api_key: str):
 
 def render():
     st.title("Configuration")
+    st.info(
+        "**Étape 1/5** — Configurez votre fournisseur IA (clé API), choisissez le "
+        "modèle de génération et ajustez les paramètres (température, tokens max). "
+        "Ces réglages seront utilisés pour toute la génération du document."
+    )
     st.markdown("---")
 
     if not st.session_state.project_state:
@@ -85,6 +66,25 @@ def render():
 
     with st.expander("Export / Import de configuration", expanded=False):
         _render_config_export_import()
+
+    # Navigation inter-étapes
+    st.markdown("---")
+    col_back, col_next = st.columns(2)
+    with col_back:
+        if st.button("← Retour à l'accueil", use_container_width=True):
+            st.session_state.current_page = "accueil"
+            st.rerun()
+    with col_next:
+        config = st.session_state.project_state.config
+        provider = st.session_state.get("provider")
+        if provider and provider.is_available():
+            if st.button("Passer à l'acquisition du corpus →", type="primary", use_container_width=True):
+                _save_state(st.session_state.project_state)
+                st.session_state.current_page = "acquisition"
+                st.rerun()
+        else:
+            st.button("Passer à l'acquisition du corpus →", type="primary", use_container_width=True, disabled=True)
+            st.caption("Configurez et validez votre fournisseur IA avant de continuer.")
 
 
 def _render_api_config():

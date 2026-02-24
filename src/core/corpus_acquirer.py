@@ -66,7 +66,18 @@ class CorpusAcquirer:
         if self._session is None:
             import requests
             self._session = requests.Session()
-            self._session.headers.update({"User-Agent": self.user_agent})
+            self._session.headers.update({
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            })
         return self._session
 
     def acquire_local_files(self, file_paths: list[Path], report: Optional[AcquisitionReport] = None) -> AcquisitionReport:
@@ -205,9 +216,31 @@ class CorpusAcquirer:
 
     def _download_file(self, url: str, domain: str, ext: str, session, timeout) -> AcquisitionStatus:
         """Télécharge un fichier depuis une URL."""
+        from src.utils.content_validator import is_valid_pdf_content, is_antibot_page
+
         try:
             resp = session.get(url, timeout=timeout)
             resp.raise_for_status()
+
+            # Vérifier que le contenu PDF est bien un PDF (magic bytes)
+            if ext == ".pdf" and not is_valid_pdf_content(resp.content):
+                # Le contenu n'est pas un PDF, c'est probablement une page HTML de challenge
+                try:
+                    html_text = resp.content.decode("utf-8", errors="ignore")
+                    if is_antibot_page(html_text, url):
+                        return AcquisitionStatus(
+                            source=url, status="FAILED",
+                            message=(
+                                "Page de protection anti-bot détectée au lieu du PDF attendu. "
+                                "Essayez de télécharger le document manuellement."
+                            ),
+                        )
+                except Exception:
+                    pass
+                return AcquisitionStatus(
+                    source=url, status="FAILED",
+                    message="Le contenu téléchargé n'est pas un PDF valide.",
+                )
 
             seq_num = get_next_sequence_number(self.corpus_dir)
             dest_name = format_sequence_name(seq_num, domain, ext)
@@ -227,9 +260,22 @@ class CorpusAcquirer:
     def _save_html_as_text(self, url: str, html_content: str, domain: str) -> AcquisitionStatus:
         """Sauvegarde le contenu textuel d'une page HTML dans le corpus."""
         from src.core.text_extractor import extract_html
+        from src.utils.content_validator import is_antibot_page
 
         result = extract_html(html_content)
         if result.status == "success" and result.text.strip():
+            # Vérifier si c'est une page anti-bot
+            if is_antibot_page(result.text, url):
+                logger.warning(f"Page anti-bot détectée : {url}")
+                return AcquisitionStatus(
+                    source=url, status="FAILED",
+                    message=(
+                        "Page de protection anti-bot détectée (Anubis/Cloudflare). "
+                        "Le contenu réel n'est pas accessible. Essayez de télécharger "
+                        "le document manuellement et de l'ajouter en fichier local."
+                    ),
+                )
+
             seq_num = get_next_sequence_number(self.corpus_dir)
             dest_name = format_sequence_name(seq_num, domain, ".txt")
             dest_path = self.corpus_dir / dest_name
