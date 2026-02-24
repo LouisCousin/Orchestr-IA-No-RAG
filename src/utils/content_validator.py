@@ -32,6 +32,10 @@ _ANTIBOT_KEYWORDS = [
 def is_antibot_page(text: str, url: str = "") -> bool:
     """Détecte si un texte est une page de protection anti-bot.
 
+    La détection nécessite TOUJOURS au moins 1 mot-clé anti-bot.
+    La longueur seule n'est pas un signal suffisant (évite les faux
+    positifs sur les pages légitimes courtes).
+
     Args:
         text: Contenu textuel extrait de la page.
         url: URL source (optionnel, pour contexte de logging).
@@ -39,28 +43,22 @@ def is_antibot_page(text: str, url: str = "") -> bool:
     Returns:
         True si le contenu semble être une page anti-bot.
     """
-    if not text:
+    if not text or not text.strip():
         return True
 
     text_lower = text.lower().strip()
 
     # Vérifier les mots-clés anti-bot
     keyword_matches = sum(1 for kw in _ANTIBOT_KEYWORDS if kw in text_lower)
+
+    # Critère 1 : 2+ mots-clés = anti-bot certain
     if keyword_matches >= 2:
         return True
 
-    # Heuristique : texte utile très court (< 500 caractères)
-    # combiné avec au moins un mot-clé
+    # Critère 2 : 1 mot-clé + contenu très court = suspect
     clean_text = re.sub(r'\s+', ' ', text).strip()
-    if len(clean_text) < 500 and keyword_matches >= 1:
+    if keyword_matches >= 1 and len(clean_text) < 500:
         return True
-
-    # Heuristique : pas de paragraphes substantiels (> 100 caractères)
-    paragraphs = [p.strip() for p in text.split('\n') if len(p.strip()) > 100]
-    if len(paragraphs) == 0 and len(clean_text) < 1000:
-        # Très peu de contenu structuré, probablement une page de challenge
-        if keyword_matches >= 1:
-            return True
 
     return False
 
