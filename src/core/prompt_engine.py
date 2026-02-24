@@ -336,8 +336,8 @@ class PromptEngine:
             excerpts_text = "\n\n---\n\n".join(parts)
             return (
                 f"\n═══ CORPUS DISPONIBLE ({num_docs} documents) ═══\n\n"
-                f"--- Liste des sources et thématiques ---\n{files_listing}\n\n"
-                f"--- Extraits représentatifs (échantillon de {len(entries)} documents) ---\n\n"
+                f"─── Liste des sources et thématiques ───\n{files_listing}\n\n"
+                f"─── Extraits représentatifs (échantillon de {len(entries)} documents) ───\n\n"
                 f"{excerpts_text}\n\n"
             )
 

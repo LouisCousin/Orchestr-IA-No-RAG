@@ -13,7 +13,20 @@ from src.core.checkpoint_manager import CheckpointManager, CheckpointConfig
 from src.utils.providers_registry import PROVIDERS_INFO
 from src.utils.reference_cleaner import clean_source_references
 
+import logging
+
+logger = logging.getLogger("orchestria")
+
 PROJECTS_DIR = ROOT_DIR / "projects"
+
+
+def _get_model(config: dict, provider) -> str:
+    """Récupère le modèle depuis la config avec warning si absent."""
+    model = config.get("model")
+    if not model:
+        logger.warning("Clé 'model' absente de la config, fallback sur le modèle par défaut du provider")
+        model = provider.get_default_model()
+    return model
 
 
 def render():
@@ -145,7 +158,7 @@ def _render_launch_and_progress(state, provider):
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Sections", total_sections)
     col2.metric("Générées", already_generated)
-    col3.metric("Modèle", config.get("model", provider.get_default_model()))
+    col3.metric("Modèle", _get_model(config, provider))
     col4.metric("Mode", "Agentique" if mode == "agentic" else "Manuel")
 
     col5, col6, col7, col8 = st.columns(4)
@@ -177,7 +190,7 @@ def _render_launch_and_progress(state, provider):
         section_count=total_sections,
         avg_corpus_tokens=avg_corpus_tokens,
         provider=config.get("default_provider", provider.name),
-        model=config.get("model", provider.get_default_model()),
+        model=_get_model(config, provider),
         num_passes=num_passes,
     )
 
@@ -356,14 +369,14 @@ def _run_generation(state, provider, tracker):
             try:
                 response = provider.generate(
                     prompt=prompt, system_prompt=system_prompt,
-                    model=state.config.get("model", provider.get_default_model()),
+                    model=_get_model(state.config, provider),
                     temperature=state.config.get("temperature", 0.7),
                     max_tokens=state.config.get("max_tokens", 4096),
                 )
 
                 tracker.record(
                     section_id=section.id,
-                    model=state.config.get("model", provider.get_default_model()),
+                    model=_get_model(state.config, provider),
                     provider=provider.name,
                     input_tokens=response.input_tokens,
                     output_tokens=response.output_tokens,
@@ -384,15 +397,15 @@ def _run_generation(state, provider, tracker):
                         )
                         summary_response = provider.generate(
                             prompt=summary_prompt,
-                            system_prompt=orchestrator.prompt_engine.build_system_prompt(),
-                            model=state.config.get("model", provider.get_default_model()),
+                            system_prompt=orchestrator.prompt_engine.build_system_prompt(has_corpus=False),
+                            model=_get_model(state.config, provider),
                             temperature=0.3,
                             max_tokens=200,
                         )
                         summary = summary_response.content.strip()
                         tracker.record(
                             section_id=section.id,
-                            model=state.config.get("model", provider.get_default_model()),
+                            model=_get_model(state.config, provider),
                             provider=provider.name,
                             input_tokens=summary_response.input_tokens,
                             output_tokens=summary_response.output_tokens,

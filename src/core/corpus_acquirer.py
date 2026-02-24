@@ -183,6 +183,12 @@ class CorpusAcquirer:
 
         # Si c'est un PDF malgré tout
         if "application/pdf" in actual_content_type:
+            from src.utils.content_validator import is_valid_pdf_content
+            if not is_valid_pdf_content(resp.content):
+                return AcquisitionStatus(
+                    source=url, status="FAILED",
+                    message="Contenu reçu non reconnu comme PDF valide.",
+                )
             seq_num = get_next_sequence_number(self.corpus_dir)
             dest_name = format_sequence_name(seq_num, domain, ".pdf")
             dest_path = self.corpus_dir / dest_name

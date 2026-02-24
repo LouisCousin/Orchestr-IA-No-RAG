@@ -368,22 +368,22 @@ def _render_rag_inspection(project_dir: Path):
             test_query = st.text_input("Requête de test", placeholder="Saisissez un terme pour tester la recherche RAG...")
             if test_query and st.button("Tester la recherche"):
                 try:
-                    import chromadb
-                    client = chromadb.PersistentClient(path=str(chromadb_dir))
-                    collection = client.get_or_create_collection("orchestria_corpus")
-                    results = collection.query(
-                        query_texts=[test_query],
-                        n_results=min(5, chroma_count),
-                        include=["documents", "metadatas", "distances"],
+                    from src.core.rag_engine import RAGEngine
+                    config = st.session_state.project_state.config if st.session_state.get("project_state") else {}
+                    engine = RAGEngine(
+                        persist_dir=chromadb_dir,
+                        config=config,
+                        top_k=config.get("rag", {}).get("top_k", 10),
+                        relevance_threshold=config.get("rag", {}).get("relevance_threshold", 0.3),
                     )
-                    if results and results["documents"] and results["documents"][0]:
-                        for i, doc in enumerate(results["documents"][0]):
-                            distance = results["distances"][0][i] if results["distances"] else 0
-                            similarity = 1.0 - distance
-                            metadata = results["metadatas"][0][i] if results["metadatas"] else {}
-                            source = metadata.get("source_file", metadata.get("doc_id", "inconnu"))
+                    result = engine.search(test_query, top_k=5)
+                    if result.chunks:
+                        for i, chunk in enumerate(result.chunks):
+                            similarity = chunk.get("similarity", 0)
+                            source = chunk.get("source_file", "inconnu")
+                            text = chunk.get("text", "")
                             st.markdown(f"**Résultat {i+1}** (score: {similarity:.3f}) — {source}")
-                            st.text(doc[:300] + ("..." if len(doc) > 300 else ""))
+                            st.text(text[:300] + ("..." if len(text) > 300 else ""))
                     else:
                         st.info("Aucun résultat trouvé.")
                 except Exception as e:
