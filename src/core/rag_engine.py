@@ -336,6 +336,9 @@ class RAGEngine:
             chunks = chunks[:top_k]
             scores = scores[:top_k]
 
+        # Recalculate total_tokens to reflect only returned chunks (not all candidates)
+        total_tokens = sum(c.get("token_estimate", len(c.get("text", "")) // 4) for c in chunks)
+
         num_relevant = sum(1 for s in scores if s >= self.relevance_threshold)
         avg_score = sum(scores) / len(scores) if scores else 0.0
 

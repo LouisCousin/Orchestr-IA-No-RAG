@@ -261,16 +261,18 @@ class Orchestrator:
                 project_dir=self.project_dir,
             )
 
-        # B2: Re-instantiate PromptEngine with Phase 3 parameters
-        cit_config = self.config.get("citations", {})
-        self.prompt_engine = PromptEngine(
-            persistent_instructions=self.config.get("persistent_instructions", ""),
-            anti_hallucination_enabled=self.config.get("anti_hallucination_enabled", True),
-            citations_enabled=cit_config.get("enabled", False),
-            glossary_engine=self._glossary_engine,
-            persona_engine=self._persona_engine,
-            persistent_instructions_engine=self._persistent_instructions_engine,
-        )
+        # B2: Re-instantiate PromptEngine with Phase 3 parameters (once only)
+        if not getattr(self, '_phase3_prompt_engine_initialized', False):
+            cit_config = self.config.get("citations", {})
+            self.prompt_engine = PromptEngine(
+                persistent_instructions=self.config.get("persistent_instructions", ""),
+                anti_hallucination_enabled=self.config.get("anti_hallucination_enabled", True),
+                citations_enabled=cit_config.get("enabled", False),
+                glossary_engine=self._glossary_engine,
+                persona_engine=self._persona_engine,
+                persistent_instructions_engine=self._persistent_instructions_engine,
+            )
+            self._phase3_prompt_engine_initialized = True
 
     def _init_rag(self) -> None:
         """Initialise le moteur RAG si nécessaire."""
@@ -468,9 +470,7 @@ class Orchestrator:
             self.activity_log.info("Démarrage de la génération séquentielle (brouillon)")
             sections_to_generate = [s for s in plan.sections if s.status != "generated"]
 
-        system_prompt = self.prompt_engine.build_system_prompt()
-
-        # Initialize Phase 3 engines before generation
+        # Initialize Phase 3 engines before generation (must happen before building system prompt)
         try:
             self._init_phase3_engines()
         except Exception as e:
@@ -553,6 +553,13 @@ class Orchestrator:
             elif self.state.corpus:
                 corpus_chunks = self.state.corpus.get_chunks_for_section(section.title)
 
+            # Build per-section system prompt (with section_id for hierarchical
+            # instructions and has_corpus to control anti-hallucination block)
+            system_prompt = self.prompt_engine.build_system_prompt(
+                has_corpus=bool(corpus_chunks),
+                section_id=section.id,
+            )
+
             # Construire le prompt
             if is_refinement:
                 prompt = self.prompt_engine.build_refinement_prompt(
@@ -621,16 +628,20 @@ class Orchestrator:
                     section=section.id,
                 )
 
-                # Générer un résumé pour le contexte (passe 1 uniquement)
-                if not is_refinement:
-                    summary = self._generate_summary(section, content, model, system_prompt)
-                    self.state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
-
                 # Phase 3 : évaluation qualité et factcheck post-génération
-                self._run_post_generation_evaluation(
+                # (may auto-correct content in agentic mode)
+                corrected = self._run_post_generation_evaluation(
                     section, content, plan, corpus_chunks,
                     is_refinement=is_refinement,
                 )
+                if corrected:
+                    content = corrected
+
+                # Générer un résumé pour le contexte (passe 1 uniquement)
+                # Done after evaluation so summary reflects final content
+                if not is_refinement:
+                    summary = self._generate_summary(section, content, model, system_prompt)
+                    self.state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
 
             except Exception as e:
                 section.status = "failed"
@@ -767,14 +778,16 @@ class Orchestrator:
                 logger.warning(f"Évaluation qualité échouée pour {section.id}: {e}")
 
         # B3: Auto-correction loop (agentic mode only)
+        corrected_content = None
         if self.is_agentic:
             corrected_content = self._auto_correct_if_needed(
                 section, content, plan, corpus_chunks, fc_report, qr,
             )
             if corrected_content:
-                return corrected_content
+                content = corrected_content
 
-        # B3: Citation resolution after generation
+        # B3: Citation resolution after generation (runs on final content,
+        # whether original or auto-corrected)
         if self._citation_engine and self._citation_engine.enabled:
             try:
                 citations = self._citation_engine.extract_inline_citations(content)
@@ -787,7 +800,7 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"Résolution des citations échouée pour {section.id}: {e}")
 
-        return None
+        return corrected_content
 
     def _auto_correct_if_needed(
         self,
