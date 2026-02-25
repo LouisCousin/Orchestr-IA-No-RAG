@@ -125,6 +125,9 @@ def _normalize_config(config: dict) -> dict:
     ``conditional_generation_enabled``).  Flat keys already present take
     precedence so that values set by the UI are never overwritten.
     """
+    # Work on a shallow copy to avoid mutating the caller's dict
+    config = dict(config)
+
     mapping = {
         # conditional_generation.*
         ("conditional_generation", "enabled"): "conditional_generation_enabled",
@@ -539,10 +542,7 @@ class Orchestrator:
                 rag_result = self.rag_engine.search_for_section(
                     section.id, section.title, section.description or ""
                 )
-                corpus_chunks = [
-                    type("Chunk", (), {"text": c["text"], "source_file": c["source_file"]})()
-                    for c in rag_result.chunks
-                ]
+                corpus_chunks = rag_result.chunks
 
                 # Évaluation de la couverture conditionnelle
                 if self.conditional_generator and not is_refinement:
@@ -663,9 +663,10 @@ class Orchestrator:
                     # En mode manuel, créer un checkpoint pour informer l'utilisateur
                     if self.checkpoint_mgr:
                         self.checkpoint_mgr.create_checkpoint(
-                            step=f"error_{section.id}",
-                            data={"error": str(e), "section_id": section.id},
-                            message=f"Erreur lors de la génération de {section.title}: {e}",
+                            checkpoint_type=f"error_{section.id}",
+                            content=f"Erreur lors de la génération de {section.title}: {e}",
+                            section_id=section.id,
+                            metadata={"error": str(e)},
                         )
                     continue
 
@@ -724,7 +725,16 @@ class Orchestrator:
 
             result = self.checkpoint_mgr.resolve_checkpoint(action, modified_content, user_comment)
 
-            # m1: If user modified the content, run feedback analysis
+            if action == "rejected":
+                # User rejected: halt the pipeline, do not continue generation
+                self.activity_log.warning(
+                    f"Section {section_id or '?'} rejetée par l'utilisateur",
+                    section=section_id,
+                )
+                self.save_state()
+                return self.state.generated_sections if self.state else {}
+
+            # If user modified the content, run feedback analysis
             if action == "modified" and modified_content and section_id and self.state:
                 original = self.state.generated_sections.get(section_id, "")
                 if original:
@@ -885,7 +895,10 @@ class Orchestrator:
                 target_pages=target_pages,
                 extra_instruction=combined_instruction,
             )
-            system_prompt = self.prompt_engine.build_system_prompt()
+            system_prompt = self.prompt_engine.build_system_prompt(
+                has_corpus=bool(corpus_chunks),
+                section_id=section.id,
+            )
 
             response = self.provider.generate(
                 prompt=prompt,

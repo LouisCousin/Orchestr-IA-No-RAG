@@ -517,11 +517,21 @@ class RAGEngine:
 
         # Étape 3 : Enrichissement avec métadonnées SQLite
         if metadata_store:
+            import json as _json
             for chunk in candidates:
                 doc_meta = metadata_store.get_document(chunk.doc_id)
                 if doc_meta:
                     chunk.doc_title = doc_meta.title or ""
-                    chunk.doc_authors = doc_meta.authors or ""
+                    # authors is stored as a JSON-encoded list; decode it
+                    raw_authors = doc_meta.authors or ""
+                    if raw_authors:
+                        try:
+                            parsed = _json.loads(raw_authors)
+                            if isinstance(parsed, list):
+                                raw_authors = ", ".join(parsed)
+                        except (ValueError, TypeError):
+                            pass
+                    chunk.doc_authors = raw_authors
                     chunk.apa_reference = doc_meta.apa_reference or ""
 
         return candidates
@@ -569,7 +579,7 @@ class RAGEngine:
                 chunks.append(chunk)
 
             start = end - char_overlap
-            if start >= len(text) - char_overlap:
+            if start >= len(text):
                 break
 
         return chunks

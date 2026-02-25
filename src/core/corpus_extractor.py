@@ -383,7 +383,7 @@ class CorpusExtractor:
 
             new_start = end - self.chunk_overlap
             start = max(start + 1, new_start)  # Guarantee forward progress
-            if start >= len(text) - self.chunk_overlap:
+            if start >= len(text):
                 break
 
         return chunks
