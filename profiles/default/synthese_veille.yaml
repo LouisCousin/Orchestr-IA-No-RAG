@@ -1,0 +1,26 @@
+name: Synthèse de veille
+description: Document de synthèse d'une veille thématique (technologique, réglementaire,
+  concurrentielle).
+target_pages: 10
+tone: informatif et synthétique
+generation:
+  temperature: 0.5
+  max_tokens: 4096
+  number_of_passes: 1
+checkpoints:
+  after_plan_validation: true
+  after_corpus_acquisition: false
+  after_extraction: false
+  after_prompt_generation: false
+  after_generation: false
+  final_review: true
+styling:
+  primary_color: '#1ABC9C'
+  secondary_color: '#2C3E50'
+  font_title: Calibri
+  font_body: Calibri
+  font_size_title: 16
+  font_size_body: 11
+persistent_instructions: Adopte un ton informatif et concis. Privilégie la synthèse
+  à l'exhaustivité. Identifie les tendances clés et les signaux faibles. Chaque section
+  doit commencer par un point clé encadré.

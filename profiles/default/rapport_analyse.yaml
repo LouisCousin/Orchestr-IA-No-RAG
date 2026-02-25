@@ -1,0 +1,26 @@
+name: Rapport d'analyse
+description: Rapport structuré d'analyse approfondie d'un sujet, avec données, constats
+  et recommandations.
+target_pages: 20
+tone: professionnel et analytique
+generation:
+  temperature: 0.6
+  max_tokens: 4096
+  number_of_passes: 1
+checkpoints:
+  after_plan_validation: true
+  after_corpus_acquisition: false
+  after_extraction: false
+  after_prompt_generation: false
+  after_generation: false
+  final_review: true
+styling:
+  primary_color: '#2C3E50'
+  secondary_color: '#34495E'
+  font_title: Calibri
+  font_body: Calibri
+  font_size_title: 16
+  font_size_body: 11
+persistent_instructions: Adopte un ton analytique et factuel. Chaque affirmation doit
+  être étayée par des données du corpus. Inclus des tableaux et des listes à puces
+  pour structurer les informations clés.
