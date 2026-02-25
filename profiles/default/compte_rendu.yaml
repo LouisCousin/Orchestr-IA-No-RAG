@@ -1,0 +1,25 @@
+name: Compte rendu
+description: Compte rendu de réunion, d'événement ou de mission, structuré et factuel.
+target_pages: 5
+tone: factuel et concis
+generation:
+  temperature: 0.4
+  max_tokens: 4096
+  number_of_passes: 1
+checkpoints:
+  after_plan_validation: true
+  after_corpus_acquisition: false
+  after_extraction: false
+  after_prompt_generation: false
+  after_generation: false
+  final_review: true
+styling:
+  primary_color: '#7F8C8D'
+  secondary_color: '#2C3E50'
+  font_title: Calibri
+  font_body: Calibri
+  font_size_title: 14
+  font_size_body: 11
+persistent_instructions: Adopte un ton factuel et neutre. Privilégie les phrases courtes
+  et les listes à puces. Chaque point doit être attribuable (qui a dit/fait quoi).
+  Inclus systématiquement les décisions prises et les actions à mener.

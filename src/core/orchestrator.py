@@ -39,6 +39,13 @@ class ProjectState:
     cost_report: dict = field(default_factory=dict)
     deferred_sections: list[str] = field(default_factory=list)
     rag_coverage: dict = field(default_factory=dict)  # section_id → coverage assessment dict
+    # Phase 3 fields
+    quality_reports: dict = field(default_factory=dict)   # section_id → quality report dict
+    factcheck_reports: dict = field(default_factory=dict)  # section_id → factcheck report dict
+    glossary: dict = field(default_factory=dict)           # glossary data
+    personas: dict = field(default_factory=dict)           # personas config
+    citations: dict = field(default_factory=dict)          # citations resolved
+    feedback_history: list = field(default_factory=list)   # feedback loop entries
     created_at: str = ""
     updated_at: str = ""
 
@@ -61,6 +68,12 @@ class ProjectState:
             "cost_report": self.cost_report,
             "deferred_sections": self.deferred_sections,
             "rag_coverage": self.rag_coverage,
+            "quality_reports": self.quality_reports,
+            "factcheck_reports": self.factcheck_reports,
+            "glossary": self.glossary,
+            "personas": self.personas,
+            "citations": self.citations,
+            "feedback_history": self.feedback_history,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
         }
@@ -79,6 +92,12 @@ class ProjectState:
             cost_report=data.get("cost_report", {}),
             deferred_sections=data.get("deferred_sections", []),
             rag_coverage=data.get("rag_coverage", {}),
+            quality_reports=data.get("quality_reports", {}),
+            factcheck_reports=data.get("factcheck_reports", {}),
+            glossary=data.get("glossary", {}),
+            personas=data.get("personas", {}),
+            citations=data.get("citations", {}),
+            feedback_history=data.get("feedback_history", []),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
@@ -147,6 +166,58 @@ class Orchestrator:
         self.state: Optional[ProjectState] = None
         self._metadata_store = None  # Phase 2.5 : MetadataStore SQLite
         self._last_plan_context = None  # Phase 2.5 : dernier PlanContext pour affichage UI
+        # Phase 3 engines (lazy-initialized)
+        self._quality_evaluator = None
+        self._factcheck_engine = None
+        self._citation_engine = None
+        self._glossary_engine = None
+        self._persona_engine = None
+        self._feedback_engine = None
+        self._hitl_journal = None
+
+    def _init_phase3_engines(self) -> None:
+        """Initialise les engines Phase 3 si nécessaire."""
+        # Quality evaluator
+        if self._quality_evaluator is None:
+            from src.core.quality_evaluator import QualityEvaluator
+            qe_config = self.config.get("quality_evaluation", {})
+            self._quality_evaluator = QualityEvaluator(
+                provider=self.provider,
+                weights=qe_config.get("weights"),
+                auto_refine_threshold=qe_config.get("auto_refine_threshold", 3.0),
+                evaluation_model=qe_config.get("evaluation_model"),
+                enabled=qe_config.get("enabled", True),
+            )
+
+        # Factcheck engine
+        if self._factcheck_engine is None:
+            from src.core.factcheck_engine import FactcheckEngine
+            fc_config = self.config.get("factcheck", {})
+            self._factcheck_engine = FactcheckEngine(
+                provider=self.provider,
+                rag_engine=self.rag_engine,
+                project_dir=self.project_dir,
+                enabled=fc_config.get("enabled", True),
+                auto_correct_threshold=fc_config.get("auto_correct_threshold", 80.0),
+                max_claims_per_section=fc_config.get("max_claims_per_section", 30),
+                factcheck_model=fc_config.get("factcheck_model"),
+            )
+
+        # Feedback engine
+        if self._feedback_engine is None:
+            from src.core.feedback_engine import FeedbackEngine
+            fb_config = self.config.get("feedback_loop", {})
+            self._feedback_engine = FeedbackEngine(
+                provider=self.provider,
+                enabled=fb_config.get("enabled", True),
+                min_diff_ratio=fb_config.get("min_diff_ratio", 0.15),
+                analysis_model=fb_config.get("analysis_model"),
+            )
+
+        # HITL journal
+        if self._hitl_journal is None:
+            from src.core.hitl_journal import HITLJournal
+            self._hitl_journal = HITLJournal()
 
     def _init_rag(self) -> None:
         """Initialise le moteur RAG si nécessaire."""
@@ -476,6 +547,12 @@ class Orchestrator:
                     summary = self._generate_summary(section, content, model, system_prompt)
                     self.state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
 
+                # Phase 3 : évaluation qualité et factcheck post-génération
+                self._run_post_generation_evaluation(
+                    section, content, plan, corpus_chunks,
+                    is_refinement=is_refinement,
+                )
+
             except Exception as e:
                 section.status = "failed"
                 self.activity_log.error(f"Erreur génération section {section.id}: {e}", section=section.id)
@@ -531,6 +608,60 @@ class Orchestrator:
         if self.checkpoint_mgr.has_pending:
             self.checkpoint_mgr.resolve_checkpoint("approved")
         return self.generate_all_sections(pass_number=self.state.current_pass if self.state else 1)
+
+    def _run_post_generation_evaluation(
+        self,
+        section: PlanSection,
+        content: str,
+        plan: NormalizedPlan,
+        corpus_chunks: list,
+        is_refinement: bool = False,
+    ) -> None:
+        """Exécute l'évaluation qualité et factcheck après génération (Phase 3)."""
+        try:
+            self._init_phase3_engines()
+        except Exception as e:
+            logger.warning(f"Initialisation Phase 3 échouée : {e}")
+            return
+
+        # Factcheck
+        factcheck_score = None
+        if self._factcheck_engine and self._factcheck_engine.enabled:
+            try:
+                fc_report = self._factcheck_engine.check_section(
+                    section_id=section.id,
+                    content=content,
+                    section_title=section.title,
+                    section_description=section.description or "",
+                )
+                self.state.factcheck_reports[section.id] = fc_report.to_dict()
+                factcheck_score = fc_report.reliability_score
+                self.activity_log.info(
+                    f"Factcheck {section.id}: {fc_report.reliability_score:.0f}% "
+                    f"({fc_report.total_claims} affirmations)",
+                    section=section.id,
+                )
+            except Exception as e:
+                logger.warning(f"Factcheck échoué pour {section.id}: {e}")
+
+        # Quality evaluation
+        if self._quality_evaluator and self._quality_evaluator.enabled:
+            try:
+                qr = self._quality_evaluator.evaluate_section(
+                    section=section,
+                    content=content,
+                    plan=plan,
+                    corpus_chunks=corpus_chunks,
+                    previous_summaries=self.state.section_summaries,
+                    factcheck_score=factcheck_score,
+                )
+                self.state.quality_reports[section.id] = qr.to_dict()
+                self.activity_log.info(
+                    f"Qualité {section.id}: {qr.global_score:.2f}/5.0",
+                    section=section.id,
+                )
+            except Exception as e:
+                logger.warning(f"Évaluation qualité échouée pour {section.id}: {e}")
 
     def _generate_summary(self, section: PlanSection, content: str, model: str, system_prompt: str) -> str:
         """Génère un résumé de section pour le contexte."""

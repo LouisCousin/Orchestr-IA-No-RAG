@@ -59,6 +59,10 @@ def render():
     with st.expander("Export / Import de configuration", expanded=False):
         _render_config_export_import()
 
+    # Phase 3 sections
+    with st.expander("Phase 3 — Intelligence du pipeline", expanded=False):
+        _render_phase3_config()
+
     # Navigation inter-étapes
     st.markdown("---")
     col_back, col_next = st.columns(2)
@@ -347,6 +351,66 @@ def _render_rag_config():
         st.session_state.project_state.config = config
         _save_state(st.session_state.project_state)
         st.success("Configuration RAG sauvegardée.")
+
+
+def _render_phase3_config():
+    """Configuration Phase 3 — Intelligence du pipeline."""
+    config = st.session_state.project_state.config
+
+    st.markdown("### Évaluation de la qualité")
+    qe_config = config.get("quality_evaluation", {})
+    qe_enabled = st.checkbox("Activer l'évaluation automatique", value=qe_config.get("enabled", True), key="qe_enabled")
+    config.setdefault("quality_evaluation", {})["enabled"] = qe_enabled
+
+    st.markdown("### Vérification factuelle")
+    fc_config = config.get("factcheck", {})
+    fc_enabled = st.checkbox("Activer la vérification factuelle", value=fc_config.get("enabled", True), key="fc_enabled")
+    config.setdefault("factcheck", {})["enabled"] = fc_enabled
+
+    st.markdown("### Feedback loop")
+    fb_config = config.get("feedback_loop", {})
+    fb_enabled = st.checkbox("Activer le feedback loop", value=fb_config.get("enabled", True), key="fb_enabled")
+    config.setdefault("feedback_loop", {})["enabled"] = fb_enabled
+
+    st.markdown("### Glossaire terminologique")
+    gl_config = config.get("glossary", {})
+    gl_enabled = st.checkbox("Activer le glossaire", value=gl_config.get("enabled", False), key="gl_enabled")
+    config.setdefault("glossary", {})["enabled"] = gl_enabled
+
+    st.markdown("### Citations APA")
+    cit_config = config.get("citations", {})
+    cit_enabled = st.checkbox("Activer les citations APA", value=cit_config.get("enabled", False), key="cit_enabled")
+    config.setdefault("citations", {})["enabled"] = cit_enabled
+
+    st.markdown("### GROBID (extraction de métadonnées)")
+    gr_config = config.get("grobid", {})
+    gr_enabled = st.checkbox("Activer GROBID", value=gr_config.get("enabled", False), key="gr_enabled",
+                              help="Nécessite un conteneur Docker GROBID actif")
+    config.setdefault("grobid", {})["enabled"] = gr_enabled
+    if gr_enabled:
+        server_url = st.text_input("URL du serveur GROBID", value=gr_config.get("server_url", "http://localhost:8070"), key="gr_url")
+        config["grobid"]["server_url"] = server_url
+
+    st.markdown("### Personas")
+    p_config = config.get("personas", {})
+    p_enabled = st.checkbox("Activer les personas", value=p_config.get("enabled", False), key="p_enabled")
+    config.setdefault("personas", {})["enabled"] = p_enabled
+
+    # HITL Journal export
+    st.markdown("### Journal HITL")
+    if st.button("Exporter le journal HITL (Excel)"):
+        try:
+            from src.core.hitl_journal import HITLJournal
+            from src.utils.file_utils import ensure_dir
+            journal = HITLJournal()
+            output_dir = ensure_dir(ROOT_DIR / "output")
+            filepath = output_dir / "hitl_journal.xlsx"
+            journal.export_to_excel(filepath)
+            st.success(f"Journal exporté : {filepath}")
+        except Exception as e:
+            st.error(f"Erreur export journal HITL : {e}")
+
+    _save_state(st.session_state.project_state)
 
 
 def _render_config_export_import():

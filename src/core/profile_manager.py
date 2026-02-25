@@ -157,16 +157,21 @@ DEFAULT_PROFILES = {
 }
 
 
+CUSTOM_PROFILES_DIR = ROOT_DIR / "profiles" / "custom"
+
+
 class ProfileManager:
-    """Gère les profils de projet."""
+    """Gère les profils de projet (par défaut + personnalisés)."""
 
     def __init__(self):
         self.profiles_dir = PROFILES_DIR
+        self.custom_dir = CUSTOM_PROFILES_DIR
         self._ensure_default_profiles()
 
     def _ensure_default_profiles(self) -> None:
         """Crée les profils par défaut s'ils n'existent pas."""
         self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        self.custom_dir.mkdir(parents=True, exist_ok=True)
         for profile_id, profile_data in DEFAULT_PROFILES.items():
             profile_path = self.profiles_dir / f"{profile_id}.yaml"
             if not profile_path.exists():
@@ -225,3 +230,85 @@ class ProfileManager:
             "styling": profile.get("styling", {}),
             "number_of_passes": profile.get("generation", {}).get("number_of_passes", 1),
         }
+
+    # ── Phase 3 : Profils personnalisés ──
+
+    def save_custom_profile(self, name: str, description: str = "", config: Optional[dict] = None) -> Path:
+        """Sauvegarde un profil personnalisé.
+
+        Args:
+            name: Nom du profil.
+            description: Description du profil.
+            config: Configuration à sauvegarder.
+
+        Returns:
+            Chemin du fichier créé.
+        """
+        from src.utils.file_utils import sanitize_filename
+        profile_id = sanitize_filename(name.lower().replace(" ", "_"))
+        profile_data = {
+            "name": name,
+            "description": description,
+            "custom": True,
+            **(config or {}),
+        }
+        profile_path = self.custom_dir / f"{profile_id}.yaml"
+        save_yaml(profile_path, profile_data)
+        logger.info(f"Profil personnalisé sauvegardé : {name}")
+        return profile_path
+
+    def list_custom_profiles(self) -> list[dict]:
+        """Liste les profils personnalisés."""
+        profiles = []
+        if not self.custom_dir.exists():
+            return profiles
+        for yaml_file in sorted(self.custom_dir.glob("*.yaml")):
+            try:
+                data = load_yaml(yaml_file)
+                profiles.append({
+                    "id": yaml_file.stem,
+                    "name": data.get("name", yaml_file.stem),
+                    "description": data.get("description", ""),
+                    "target_pages": data.get("target_pages"),
+                    "path": str(yaml_file),
+                    "custom": True,
+                })
+            except Exception as e:
+                logger.warning(f"Erreur chargement profil personnalisé {yaml_file}: {e}")
+        return profiles
+
+    def delete_custom_profile(self, profile_id: str) -> bool:
+        """Supprime un profil personnalisé.
+
+        Returns:
+            True si supprimé, False sinon.
+        """
+        profile_path = self.custom_dir / f"{profile_id}.yaml"
+        if profile_path.exists():
+            profile_path.unlink()
+            logger.info(f"Profil personnalisé supprimé : {profile_id}")
+            return True
+        return False
+
+    def list_all_profiles(self) -> list[dict]:
+        """Liste tous les profils (par défaut + personnalisés)."""
+        default = self.list_profiles()
+        for p in default:
+            p["custom"] = False
+        custom = self.list_custom_profiles()
+        return default + custom
+
+    def apply_profile(self, profile_id: str, project_state) -> None:
+        """Applique un profil à un projet existant.
+
+        Args:
+            profile_id: Identifiant du profil.
+            project_state: Instance de ProjectState à modifier.
+        """
+        config = self.get_profile_config(profile_id)
+        if not config:
+            return
+        for key, value in config.items():
+            if key == "checkpoints":
+                continue  # Handled separately
+            project_state.config[key] = value

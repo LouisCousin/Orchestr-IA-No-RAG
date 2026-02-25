@@ -126,29 +126,78 @@ class PromptEngine:
     """Génère les prompts pour chaque étape du pipeline.
 
     Phase 2.5 : injection systématique du bloc anti-hallucination.
+    Phase 3 : support glossaire, persona, instructions persistantes hiérarchiques,
+              templates, citations conditionnelles.
     """
 
-    def __init__(self, persistent_instructions: str = "", anti_hallucination_enabled: bool = True):
+    def __init__(
+        self,
+        persistent_instructions: str = "",
+        anti_hallucination_enabled: bool = True,
+        citations_enabled: bool = False,
+        glossary_engine=None,
+        persona_engine=None,
+        persistent_instructions_engine=None,
+        template_library=None,
+    ):
         self.persistent_instructions = persistent_instructions
         self.anti_hallucination_enabled = anti_hallucination_enabled
+        self.citations_enabled = citations_enabled
+        self.glossary_engine = glossary_engine
+        self.persona_engine = persona_engine
+        self.persistent_instructions_engine = persistent_instructions_engine
+        self.template_library = template_library
 
-    def build_system_prompt(self, has_corpus: bool = True) -> str:
+    def build_system_prompt(self, has_corpus: bool = True, section_id: Optional[str] = None) -> str:
         """Construit le prompt système avec instructions persistantes et garde-fous.
 
         Args:
             has_corpus: Si False, désactive le bloc anti-hallucination pour éviter
                 la contradiction avec l'instruction d'utiliser les connaissances générales.
+            section_id: Identifiant de section pour les instructions hiérarchiques.
         """
+        # Phase 3: résolution hiérarchique des instructions persistantes
         instructions = ""
-        if self.persistent_instructions:
+        if self.persistent_instructions_engine and section_id:
+            try:
+                resolved = self.persistent_instructions_engine.get_instructions(section_id)
+                if resolved:
+                    instructions = f"\n\nInstructions spécifiques au projet :\n{resolved}"
+            except Exception:
+                pass
+        if not instructions and self.persistent_instructions:
             instructions = f"\n\nInstructions spécifiques au projet :\n{self.persistent_instructions}"
+
+        # Phase 3: injection du persona
+        persona_block = ""
+        if self.persona_engine:
+            try:
+                persona_text = self.persona_engine.format_for_prompt()
+                if persona_text:
+                    persona_block = f"\n\n{persona_text}"
+            except Exception:
+                pass
 
         anti_hallucination = ""
         if self.anti_hallucination_enabled and has_corpus:
-            anti_hallucination = f"\n{ANTI_HALLUCINATION_BLOCK}"
+            if self.citations_enabled:
+                anti_hallucination = f"\n{ANTI_HALLUCINATION_BLOCK}"
+            else:
+                # Without formal APA citations: keep anti-hallucination but
+                # replace APA rule with simpler file-name attribution
+                block = ANTI_HALLUCINATION_BLOCK.replace(
+                    "cite-le par sa référence bibliographique complète au format APA\n"
+                    "   (ex: Dupont, 2024) ou, à défaut, par son nom de fichier\n"
+                    "   (ex: selon le document rapport_analyse.pdf). N'utilise JAMAIS de\n"
+                    "   numéro de source comme [Source 1] ou [Source 5].",
+                    "cite-le par son nom de fichier\n"
+                    "   (ex: selon le document rapport_analyse.pdf). N'utilise JAMAIS de\n"
+                    "   numéro de source comme [Source 1] ou [Source 5].",
+                )
+                anti_hallucination = f"\n{block}"
 
         return SYSTEM_PROMPT_TEMPLATE.format(
-            persistent_instructions=instructions,
+            persistent_instructions=instructions + persona_block,
             anti_hallucination=anti_hallucination,
         )
 
@@ -199,6 +248,12 @@ class PromptEngine:
             previous_context=previous_context,
             corpus_content=corpus_content,
         )
+
+        # Phase 3: injection du glossaire
+        glossary_block = self._build_glossary_block(section.title, corpus_chunks)
+        if glossary_block:
+            prompt += f"\n\n{glossary_block}\n"
+
         if extra_instruction:
             prompt += f"\n\n═══ CONSIGNE SUPPLÉMENTAIRE ═══\n{extra_instruction}\n"
         return prompt
@@ -352,6 +407,16 @@ class PromptEngine:
         if isinstance(chunk, dict):
             return chunk.get(key, default)
         return getattr(chunk, key, default)
+
+    def _build_glossary_block(self, section_title: str, corpus_chunks: Optional[list] = None) -> str:
+        """Construit le bloc glossaire pour injection dans le prompt (Phase 3)."""
+        if not self.glossary_engine or not self.glossary_engine.enabled:
+            return ""
+        try:
+            terms = self.glossary_engine.get_terms_for_section(section_title, corpus_chunks)
+            return self.glossary_engine.format_for_prompt(terms)
+        except Exception:
+            return ""
 
     @staticmethod
     def _format_corpus_chunks_grouped(corpus_chunks: list) -> str:

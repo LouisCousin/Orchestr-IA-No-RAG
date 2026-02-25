@@ -96,10 +96,15 @@ class ExportEngine:
         output_path: Path,
         project_name: str = "",
         warn_on_markers: bool = True,
+        bibliography: Optional[list] = None,
     ) -> Path:
         """Génère le document DOCX complet.
 
         Phase 2.5 : détecte les marqueurs {{NEEDS_SOURCE}} résiduels.
+        Phase 3 : ajoute la bibliographie APA si fournie.
+
+        Args:
+            bibliography: Liste de BibliographyEntry ou dicts avec clé 'apa_reference'.
         """
         # Phase 2.5 : Vérifier les marqueurs résiduels
         if warn_on_markers:
@@ -118,7 +123,7 @@ class ExportEngine:
         ensure_dir(output_path.parent)
         doc = Document()
 
-        # Phase 3 : Nettoyage des [Source N] résiduels avant export
+        # Nettoyage des [Source N] résiduels avant export
         cleaned_sections = {
             sid: clean_source_references(content)
             for sid, content in generated_sections.items()
@@ -129,6 +134,10 @@ class ExportEngine:
         self._add_cover_page(doc, plan, project_name)
         self._add_table_of_contents(doc)
         self._add_sections(doc, plan, cleaned_sections)
+
+        # Phase 3 : Bibliographie APA
+        if bibliography:
+            self._add_bibliography(doc, bibliography)
 
         doc.save(str(output_path))
         logger.info(f"Document DOCX exporté : {output_path}")
@@ -248,6 +257,19 @@ class ExportEngine:
         run3._r.append(fldChar2)
 
         doc.add_page_break()
+
+    def _add_bibliography(self, doc: Document, bibliography: list) -> None:
+        """Ajoute la section Bibliographie APA en fin de document (Phase 3)."""
+        doc.add_page_break()
+        doc.add_heading("Bibliographie", level=1)
+
+        for entry in bibliography:
+            if isinstance(entry, dict):
+                ref = entry.get("apa_reference", "")
+            else:
+                ref = getattr(entry, "apa_reference", str(entry))
+            if ref:
+                self._add_rich_paragraph(doc, ref)
 
     def _add_sections(self, doc: Document, plan: NormalizedPlan, generated_sections: dict) -> None:
         """Ajoute les sections générées au document."""

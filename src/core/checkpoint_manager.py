@@ -65,10 +65,12 @@ class CheckpointConfig:
 class CheckpointManager:
     """Gère les checkpoints du pipeline en mode manuel."""
 
-    def __init__(self, config: Optional[CheckpointConfig] = None):
+    def __init__(self, config: Optional[CheckpointConfig] = None, hitl_journal=None, project_name: str = ""):
         self.config = config or CheckpointConfig()
         self.history: list[CheckpointResult] = []
         self._pending_checkpoint: Optional[dict] = None
+        self._hitl_journal = hitl_journal  # Phase 3: HITLJournal instance
+        self._project_name = project_name
 
     def should_pause(self, checkpoint_type: Union["CheckpointType", str]) -> bool:
         """Vérifie si le pipeline doit s'arrêter à ce checkpoint."""
@@ -118,6 +120,28 @@ class CheckpointManager:
             user_comment=user_comment,
         )
         self.history.append(result)
+
+        # Phase 3: log to HITL journal
+        if self._hitl_journal:
+            try:
+                intervention_map = {
+                    "approved": "accept",
+                    "modified": "modify",
+                    "rejected": "reject",
+                    "skipped": "skip",
+                }
+                self._hitl_journal.log_intervention(
+                    project_name=self._project_name,
+                    checkpoint_type=result.checkpoint_type,
+                    intervention_type=intervention_map.get(action, action),
+                    section_id=result.section_id,
+                    original_content=result.original_content,
+                    modified_content=result.modified_content,
+                    delta_summary=user_comment,
+                )
+            except Exception as e:
+                logger.warning(f"HITL journal logging failed: {e}")
+
         self._pending_checkpoint = None
         return result
 

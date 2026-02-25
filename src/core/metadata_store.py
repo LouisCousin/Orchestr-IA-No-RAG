@@ -281,6 +281,52 @@ class MetadataStore:
         row = conn.execute("SELECT COUNT(*) as cnt FROM chunks").fetchone()
         return row["cnt"]
 
+    # ── Phase 3 methods ──
+
+    def update_from_grobid(self, doc_id: str, grobid_data: dict) -> None:
+        """Met à jour les champs bibliographiques depuis GROBID."""
+        fields = {}
+        if grobid_data.get("title"):
+            fields["title"] = grobid_data["title"]
+        if grobid_data.get("authors"):
+            fields["authors"] = json.dumps(grobid_data["authors"])
+        if grobid_data.get("year"):
+            fields["year"] = grobid_data["year"]
+        if grobid_data.get("journal"):
+            fields["journal"] = grobid_data["journal"]
+        if grobid_data.get("volume"):
+            fields["volume"] = grobid_data["volume"]
+        if grobid_data.get("issue"):
+            fields["issue"] = grobid_data["issue"]
+        if grobid_data.get("pages"):
+            fields["pages_range"] = grobid_data["pages"]
+        if grobid_data.get("doi"):
+            fields["doi"] = grobid_data["doi"]
+        if grobid_data.get("publisher"):
+            fields["publisher"] = grobid_data["publisher"]
+        if fields:
+            self.update_document(doc_id, **fields)
+
+    def apply_overrides(self, doc_id: str, override_data: dict) -> None:
+        """Applique les corrections YAML d'overrides de métadonnées."""
+        fields = {}
+        for key, value in override_data.items():
+            if key == "authors" and isinstance(value, list):
+                fields["authors"] = json.dumps(value)
+            elif value is not None:
+                fields[key] = value
+        if fields:
+            self.update_document(doc_id, **fields)
+
+    def get_apa_reference(self, doc_id: str) -> Optional[str]:
+        """Retourne la référence APA formatée d'un document."""
+        doc = self.get_document(doc_id)
+        return doc.apa_reference if doc else None
+
+    def get_cited_documents(self, doc_ids: list) -> list[DocumentMetadata]:
+        """Récupère les métadonnées des documents cités."""
+        return [doc for doc_id in doc_ids if (doc := self.get_document(doc_id)) is not None]
+
     # ── Helpers ──
 
     @staticmethod

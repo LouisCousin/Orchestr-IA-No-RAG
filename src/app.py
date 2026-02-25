@@ -60,7 +60,9 @@ def render_sidebar():
             ("acquisition", "2. Acquisition"),
             ("plan", "3. Plan"),
             ("generation", "4. Génération"),
-            ("export", "5. Export"),
+            ("dashboard", "5. Dashboard"),
+            ("bibliotheque", "6. Bibliothèque"),
+            ("export", "7. Export"),
         ]
 
         current_page = st.session_state.current_page
@@ -141,6 +143,12 @@ elif page == "plan":
     render()
 elif page == "generation":
     from src.pages.page_generation import render
+    render()
+elif page == "dashboard":
+    from src.pages.page_dashboard import render
+    render()
+elif page == "bibliotheque":
+    from src.pages.page_bibliotheque import render
     render()
 elif page == "export":
     from src.pages.page_export import render

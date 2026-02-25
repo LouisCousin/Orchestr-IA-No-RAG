@@ -138,3 +138,63 @@ plan_corpus_linking:
   enabled: true                    # Activer la pré-analyse du corpus
   max_intro_chunks_per_doc: 3      # Chunks à extraire par document
   max_documents_for_theme: 30      # Limite pour l'analyse thématique
+
+# ═══════════════════════════════════════════
+# Phase 3 — Intelligence du pipeline
+# ═══════════════════════════════════════════
+
+# ── Évaluation de la qualité ──
+quality_evaluation:
+  enabled: true
+  auto_refine_threshold: 3.0          # Score global min avant raffinement auto
+  weights:                             # Pondérations des critères
+    plan_conformity: 1.0
+    corpus_coverage: 1.5
+    narrative_coherence: 0.8
+    target_size: 0.5
+    factual_reliability: 1.5
+    source_traceability: 1.2
+  evaluation_model: null               # null = modèle le plus économique
+
+# ── Vérification factuelle ──
+factcheck:
+  enabled: true
+  auto_correct_threshold: 80           # Score min (%) avant correction auto
+  max_claims_per_section: 30           # Limite d'affirmations analysées
+  factcheck_model: null                # null = modèle le plus économique
+
+# ── Feedback loop ──
+feedback_loop:
+  enabled: true
+  min_diff_ratio: 0.15                 # Seuil min de différence (Levenshtein)
+  analysis_model: null                 # null = modèle de brouillon
+
+# ── Glossaire ──
+glossary:
+  enabled: false                       # Désactivé par défaut (optionnel)
+  max_terms_per_prompt: 15
+  auto_generate: true                  # Proposition automatique après plan
+
+# ── Citations APA ──
+citations:
+  enabled: false                       # Désactivé par défaut
+  format: "apa7"                       # Format de référence
+  include_page_numbers: true           # Inclure les numéros de page
+
+# ── GROBID ──
+grobid:
+  enabled: false                       # Désactivé par défaut (Docker requis)
+  server_url: "http://localhost:8070"
+  timeout_seconds: 30
+  consolidate_header: true
+  batch_size: 5
+
+# ── Personas ──
+personas:
+  enabled: false                       # Désactivé par défaut (optionnel)
+  auto_suggest: true                   # Suggestion automatique par l'IA
+
+# ── Dashboard ──
+dashboard:
+  refresh_interval_seconds: 5
+  max_log_entries: 100
