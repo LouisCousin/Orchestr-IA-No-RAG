@@ -288,6 +288,18 @@ class Orchestrator:
             )
             self._phase3_prompt_engine_initialized = True
 
+    def _ensure_phase3_engine(self) -> None:
+        """Ensure Phase 3 engines (including PromptEngine) are initialized.
+
+        Safe to call multiple times — initialization is idempotent.
+        Must be called before any method that relies on the PromptEngine
+        having Phase 3 parameters (glossary, personas, citations, etc.).
+        """
+        try:
+            self._init_phase3_engines()
+        except Exception as e:
+            logger.warning(f"Initialisation Phase 3 échouée : {e}")
+
     def _init_rag(self) -> None:
         """Initialise le moteur RAG si nécessaire."""
         if self.rag_engine is not None:
@@ -368,8 +380,44 @@ class Orchestrator:
                 overlap_sentences = chunking_config.get("overlap_sentences", 2)
 
                 chunks_by_doc = {}
+
+                # Phase 3 : instancier le client GROBID si activé
+                grobid_client = None
+                grobid_config = self.config.get("grobid", {})
+                if grobid_config.get("enabled", False):
+                    try:
+                        from src.core.grobid_client import GrobidClient
+                        grobid_client = GrobidClient(
+                            server_url=grobid_config.get("server_url", "http://localhost:8070"),
+                            enabled=True,
+                        )
+                        if not grobid_client.is_available():
+                            logger.warning("GROBID activé mais serveur inaccessible, désactivation")
+                            grobid_client = None
+                    except ImportError:
+                        logger.warning("Module grobid_client non disponible")
+
                 for ext in self.state.corpus.extractions:
-                    doc_id = ext.source_filename
+                    doc_id = ext.hash_binary if ext.hash_binary else f"{ext.source_filename}_{hash(ext.text[:50])}"
+
+                    # Phase 3 : enrichir les métadonnées via GROBID pour les PDFs
+                    if grobid_client and ext.source_filename.lower().endswith(".pdf"):
+                        try:
+                            # Rechercher le fichier PDF dans le corpus
+                            pdf_path = None
+                            corpus_dir = self.project_dir / "corpus"
+                            if corpus_dir.exists():
+                                candidates = list(corpus_dir.rglob(ext.source_filename))
+                                if candidates:
+                                    pdf_path = candidates[0]
+                            if pdf_path:
+                                grobid_meta = grobid_client.process_header(pdf_path)
+                                if grobid_meta:
+                                    # Fusionner les métadonnées GROBID (elles prennent priorité)
+                                    ext.metadata.update(grobid_meta)
+                                    logger.info(f"GROBID : métadonnées enrichies pour {ext.source_filename}")
+                        except Exception as e:
+                            logger.warning(f"GROBID : erreur pour {ext.source_filename}: {e}")
 
                     # Extraire auteurs et année depuis les métadonnées
                     authors = None
@@ -448,6 +496,7 @@ class Orchestrator:
                 "text": ext.text,
                 "source_file": ext.source_filename,
                 "page_count": ext.page_count,
+                "metadata": ext.metadata,
             })
 
         count = self.rag_engine.index_corpus(extractions)
@@ -485,10 +534,7 @@ class Orchestrator:
             sections_to_generate = [s for s in plan.sections if s.status != "generated"]
 
         # Initialize Phase 3 engines before generation (must happen before building system prompt)
-        try:
-            self._init_phase3_engines()
-        except Exception as e:
-            logger.warning(f"Initialisation Phase 3 échouée : {e}")
+        self._ensure_phase3_engine()
 
         # Initialiser RAG et génération conditionnelle si corpus disponible
         # Also check for persisted ChromaDB data (corpus may be None after state reload)
@@ -1033,6 +1079,9 @@ class Orchestrator:
             corpus: Corpus structuré optionnel.
         """
         from src.core.plan_parser import PlanParser
+
+        # Ensure Phase 3 PromptEngine is initialized (glossary, personas, etc.)
+        self._ensure_phase3_engine()
 
         # Phase 2.5 : tenter la liaison plan-corpus si le RAG est indexé
         plan_corpus_enabled = self.config.get("plan_corpus_linking", {}).get("enabled", True)

@@ -118,7 +118,7 @@ class RAGEngine:
 
         Args:
             extractions: Liste de dicts avec les clés 'text', 'source_file',
-                et optionnellement 'page_count', 'hash_text'.
+                et optionnellement 'page_count', 'hash_text', 'metadata'.
 
         Returns:
             Nombre de blocs indexés.
@@ -141,6 +141,7 @@ class RAGEngine:
         for extraction in extractions:
             text = extraction.get("text", "")
             source = extraction.get("source_file", "unknown")
+            rich_metadata = extraction.get("metadata", {})
 
             if not text.strip():
                 continue
@@ -149,12 +150,18 @@ class RAGEngine:
             for i, chunk_text in enumerate(chunks):
                 doc_id = f"{source}_chunk_{i:04d}"
                 documents.append(chunk_text)
-                metadatas.append({
+                chunk_meta = {
                     "source_file": source,
                     "chunk_index": i,
                     "char_count": len(chunk_text),
                     "token_estimate": len(chunk_text) // 4,
-                })
+                }
+                # Merge rich metadata (author, title, date, etc.)
+                for k, v in rich_metadata.items():
+                    if v is not None and k not in chunk_meta:
+                        # ChromaDB metadata values must be str, int, float or bool
+                        chunk_meta[k] = str(v) if not isinstance(v, (int, float, bool)) else v
+                metadatas.append(chunk_meta)
                 ids.append(doc_id)
                 chunk_index += 1
 
@@ -578,7 +585,7 @@ class RAGEngine:
             if chunk:
                 chunks.append(chunk)
 
-            start = end - char_overlap
+            start = max(start + 1, end - char_overlap)
             if start >= len(text):
                 break
 

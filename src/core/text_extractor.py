@@ -232,20 +232,28 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
                 gc.collect()
     else:
         # ── Mode single-pass : PDF de taille modérée ──
-        converter = _create_docling_converter(pdf_cfg)
-        result = converter.convert(str(path))
-        sections = _extract_sections_from_docling_result(result)
+        converter = None
+        result = None
+        try:
+            converter = _create_docling_converter(pdf_cfg)
+            result = converter.convert(str(path))
+            sections = _extract_sections_from_docling_result(result)
 
-        # Récupérer le page_count depuis Docling si on ne l'a pas
-        if total_pages == 0:
-            doc = result.document
-            total_pages = doc.num_pages() if hasattr(doc, "num_pages") else max(
-                (s.get("page") or 0 for s in sections), default=1
-            )
-
-        del converter
-        del result
-        gc.collect()
+            # Récupérer le page_count depuis Docling si on ne l'a pas
+            if total_pages == 0:
+                doc = result.document
+                total_pages = doc.num_pages() if hasattr(doc, "num_pages") else max(
+                    (s.get("page") or 0 for s in sections), default=1
+                )
+        except Exception as e:
+            logger.warning(f"Erreur extraction Docling single-pass pour {path.name}: {e}")
+            raise
+        finally:
+            if converter:
+                del converter
+            if result:
+                del result
+            gc.collect()
 
     # ── Détection de couverture et rattrapage pymupdf ──
     if total_pages > 0:

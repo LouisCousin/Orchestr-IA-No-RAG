@@ -156,11 +156,9 @@ def _render_model_config():
 
     current_model = config.get("model", info["default_model"])
     if current_model not in models:
+        # Display with first available model selected; actual config update
+        # happens when user clicks "Sauvegarder" to avoid state mutation during render.
         current_model = models[0]
-        # Corriger automatiquement le modèle invalide dans la config
-        config["model"] = current_model
-        st.session_state.project_state.config = config
-        _save_state(st.session_state.project_state)
 
     model = st.selectbox("Modèle", models, index=models.index(current_model) if current_model in models else 0)
 
