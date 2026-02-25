@@ -174,7 +174,7 @@ class HITLJournal:
         Returns:
             Chemin du fichier créé.
         """
-        import pandas as pd
+        from openpyxl import Workbook
 
         entries = self.get_interventions(project=project)
         if not entries:
@@ -189,11 +189,22 @@ class HITLJournal:
             projects[pname].append(e)
 
         filepath.parent.mkdir(parents=True, exist_ok=True)
-        with pd.ExcelWriter(str(filepath), engine="openpyxl") as writer:
-            for pname, pentries in projects.items():
-                sheet_name = pname[:31]  # Excel limits sheet names to 31 chars
-                df = pd.DataFrame(pentries)
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+        wb = Workbook()
+        # Remove the default sheet created by Workbook()
+        wb.remove(wb.active)
+
+        for pname, pentries in projects.items():
+            sheet_name = pname[:31]  # Excel limits sheet names to 31 chars
+            ws = wb.create_sheet(title=sheet_name)
+            if pentries:
+                headers = list(pentries[0].keys())
+                for col_idx, header in enumerate(headers, 1):
+                    ws.cell(row=1, column=col_idx, value=header)
+                for row_idx, row in enumerate(pentries, 2):
+                    for col_idx, header in enumerate(headers, 1):
+                        ws.cell(row=row_idx, column=col_idx, value=row.get(header, ""))
+
+        wb.save(str(filepath))
 
         logger.info(f"Journal HITL exporté : {filepath}")
         return filepath

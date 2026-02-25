@@ -478,6 +478,21 @@ class ExportEngine:
             elif part:
                 paragraph.add_run(part)
 
+    @staticmethod
+    def _write_sheet(wb, sheet_name: str, rows: list[dict]) -> None:
+        """Écrit une liste de dicts dans une feuille openpyxl."""
+        from openpyxl.utils import get_column_letter
+
+        ws = wb.create_sheet(title=sheet_name)
+        if not rows:
+            return
+        headers = list(rows[0].keys())
+        for col_idx, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col_idx, value=header)
+        for row_idx, row in enumerate(rows, 2):
+            for col_idx, header in enumerate(headers, 1):
+                ws.cell(row=row_idx, column=col_idx, value=row.get(header, ""))
+
     def export_metadata_excel(
         self,
         plan: NormalizedPlan,
@@ -488,7 +503,7 @@ class ExportEngine:
         deferred_sections: Optional[list] = None,
     ) -> Path:
         """Exporte les métadonnées du projet en Excel (Phase 2 complet)."""
-        import pandas as pd
+        from openpyxl import Workbook
 
         ensure_dir(output_path.parent)
 
@@ -548,13 +563,18 @@ class ExportEngine:
                     "Longueur totale": len(content),
                 })
 
-        with pd.ExcelWriter(str(output_path), engine="openpyxl") as writer:
-            pd.DataFrame(recap_data).to_excel(writer, sheet_name="Récapitulatif", index=False)
-            pd.DataFrame(sections_data).to_excel(writer, sheet_name="Sections", index=False)
-            if costs_data:
-                pd.DataFrame(costs_data).to_excel(writer, sheet_name="Coûts", index=False)
-            if corpus_data:
-                pd.DataFrame(corpus_data).to_excel(writer, sheet_name="Contenu", index=False)
+        wb = Workbook()
+        # Remove the default sheet created by Workbook()
+        wb.remove(wb.active)
+
+        self._write_sheet(wb, "Récapitulatif", recap_data)
+        self._write_sheet(wb, "Sections", sections_data)
+        if costs_data:
+            self._write_sheet(wb, "Coûts", costs_data)
+        if corpus_data:
+            self._write_sheet(wb, "Contenu", corpus_data)
+
+        wb.save(str(output_path))
 
         logger.info(f"Métadonnées exportées : {output_path}")
         return output_path

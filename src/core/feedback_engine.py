@@ -246,16 +246,9 @@ class FeedbackEngine:
             import Levenshtein
             return 1.0 - Levenshtein.ratio(s1, s2)
         except ImportError:
-            # Fallback: simple word-level diff ratio
-            words1 = set(s1.lower().split())
-            words2 = set(s2.lower().split())
-            if not words1 and not words2:
-                return 0.0
-            union = words1 | words2
-            intersection = words1 & words2
-            if not union:
-                return 0.0
-            return 1.0 - (len(intersection) / len(union))
+            # Fallback: character-level diff using stdlib SequenceMatcher
+            from difflib import SequenceMatcher
+            return 1.0 - SequenceMatcher(None, s1, s2).ratio()
 
     @staticmethod
     def _parse_json(text: str) -> dict:
