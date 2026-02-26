@@ -9,11 +9,17 @@ Phase 2.5 : pipeline hybride complet avec :
 Phase 4 (Perf) : pipeline "Batch Embedding" — collecte de tous les chunks
   puis vectorisation de masse pour exploiter le parallélisme des Transformers.
   Support des providers d'embeddings externes (OpenAI, Gemini) via config.
+Phase 4.1 (Perf) : cache LRU sur search_for_section pour éviter les recherches
+  redondantes (factcheck, qualité, etc. réutilisent les mêmes résultats).
+Phase 4.2 (Perf) : pipeline d'embedding asynchrone — le flush ChromaDB du lot N
+  s'exécute en parallèle avec le calcul des embeddings du lot N+1.
 Phase 5 (Sécurité mémoire) : segmentation RAM par lots de MAX_RAM_BATCH_SIZE
   pour éviter les OOM sur les très gros corpus (500k+ chunks).
 """
 
 import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -87,6 +93,10 @@ class RAGEngine:
         )
         self._reranking_enabled = rag_cfg.get("reranking_enabled", True)
         self._initial_candidates = rag_cfg.get("initial_candidates", 20)
+
+        # Phase 4.1 (Perf) : cache LRU pour search_for_section
+        self._search_cache: dict[str, "RAGResult"] = {}
+        self._search_cache_lock = threading.Lock()
 
     def _get_client(self):
         """Initialise le client ChromaDB (lazy)."""
@@ -200,6 +210,54 @@ class RAGEngine:
             logger.warning(f"Erreur embeddings Gemini : {e}, fallback ChromaDB")
             return []
 
+    def _compute_embeddings_only(self, documents: list[str]) -> Optional[list[list[float]]]:
+        """Phase 4.2 (Perf) : calcule les embeddings sans écrire dans ChromaDB.
+
+        Utilisé pour pipeliner le calcul des embeddings du lot N+1
+        pendant l'écriture ChromaDB du lot N.
+
+        Returns:
+            Liste de vecteurs, ou None si fallback ChromaDB nécessaire.
+        """
+        if not self._use_local_embeddings and self._embedding_provider == "local":
+            return None
+        try:
+            embeddings = self._get_embeddings(documents, mode="document")
+            return embeddings if embeddings else None
+        except Exception as e:
+            logger.warning(f"Erreur calcul embeddings pipelinés : {e}")
+            return None
+
+    def _write_to_chromadb(
+        self,
+        collection,
+        documents: list[str],
+        metadatas: list[dict],
+        ids: list[str],
+        embeddings: Optional[list[list[float]]] = None,
+        chromadb_batch_size: int = 5000,
+    ) -> None:
+        """Écrit des chunks (avec embeddings pré-calculés) dans ChromaDB.
+
+        Args:
+            collection: Collection ChromaDB cible.
+            documents: Textes des chunks.
+            metadatas: Métadonnées associées.
+            ids: Identifiants des chunks.
+            embeddings: Vecteurs pré-calculés (si None, ChromaDB les calcule).
+            chromadb_batch_size: Taille des sous-lots pour l'API ChromaDB.
+        """
+        for start in range(0, len(documents), chromadb_batch_size):
+            end = min(start + chromadb_batch_size, len(documents))
+            kwargs = {
+                "documents": documents[start:end],
+                "metadatas": metadatas[start:end],
+                "ids": ids[start:end],
+            }
+            if embeddings:
+                kwargs["embeddings"] = embeddings[start:end]
+            collection.add(**kwargs)
+
     def _flush_batch(
         self,
         collection,
@@ -220,35 +278,91 @@ class RAGEngine:
         if not documents:
             return
 
-        if self._use_local_embeddings:
-            try:
-                embeddings = self._get_embeddings(documents, mode="document")
-                if embeddings:
-                    for start in range(0, len(documents), chromadb_batch_size):
-                        end = min(start + chromadb_batch_size, len(documents))
-                        collection.add(
-                            documents=documents[start:end],
-                            embeddings=embeddings[start:end],
-                            metadatas=metadatas[start:end],
-                            ids=ids[start:end],
-                        )
-                    return
-            except Exception as e:
-                logger.warning(f"Erreur embeddings locaux batch, fallback ChromaDB : {e}")
+        embeddings = self._compute_embeddings_only(documents)
+        self._write_to_chromadb(collection, documents, metadatas, ids, embeddings, chromadb_batch_size)
 
-        # Fallback : ChromaDB gère les embeddings
-        for start in range(0, len(documents), chromadb_batch_size):
-            end = min(start + chromadb_batch_size, len(documents))
-            collection.add(
-                documents=documents[start:end],
-                metadatas=metadatas[start:end],
-                ids=ids[start:end],
-            )
+    def _pipeline_index_batches(
+        self,
+        collection,
+        batches: list[tuple[list[str], list[dict], list[str]]],
+    ) -> int:
+        """Phase 4.2 (Perf) : indexe les lots avec un pipeline asynchrone.
+
+        Pour chaque paire de lots consécutifs :
+        - Thread 1 : écrit le lot N (avec embeddings déjà calculés) dans ChromaDB
+        - Thread 2 : calcule les embeddings du lot N+1 en parallèle
+
+        Cela masque la latence d'écriture ChromaDB derrière le calcul des
+        embeddings du lot suivant, réduisant le temps total d'indexation.
+
+        Si un seul lot, utilise le flush classique (pas de pipeline).
+
+        Returns:
+            Nombre total de chunks indexés.
+        """
+        if not batches:
+            return 0
+
+        total_indexed = 0
+
+        # Un seul lot : flush classique, pas besoin de pipeline
+        if len(batches) == 1:
+            docs, metas, batch_ids = batches[0]
+            logger.info(f"Batch Embedding : flush unique de {len(docs)} chunks")
+            self._flush_batch(collection, docs, metas, batch_ids)
+            return len(docs)
+
+        # Plusieurs lots : pipeline embedding(N+1) // write(N)
+        logger.info(
+            f"Pipeline Embedding : {len(batches)} lots à indexer "
+            f"({sum(len(b[0]) for b in batches)} chunks total)"
+        )
+
+        # Pré-calculer les embeddings du premier lot (synchrone)
+        first_docs, first_metas, first_ids = batches[0]
+        prev_embeddings = self._compute_embeddings_only(first_docs)
+        prev_batch = batches[0]
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            for batch_idx in range(1, len(batches)):
+                cur_docs, cur_metas, cur_ids = batches[batch_idx]
+
+                # Lancer le calcul des embeddings du lot courant en arrière-plan
+                embed_future: Future = executor.submit(
+                    self._compute_embeddings_only, cur_docs,
+                )
+
+                # Pendant ce temps, écrire le lot précédent dans ChromaDB (synchrone)
+                p_docs, p_metas, p_ids = prev_batch
+                logger.info(
+                    f"Pipeline lot {batch_idx}/{len(batches)}: "
+                    f"écriture de {len(p_docs)} chunks + embedding de {len(cur_docs)} chunks"
+                )
+                self._write_to_chromadb(
+                    collection, p_docs, p_metas, p_ids, prev_embeddings,
+                )
+                total_indexed += len(p_docs)
+
+                # Attendre les embeddings du lot courant
+                prev_embeddings = embed_future.result()
+                prev_batch = batches[batch_idx]
+
+        # Écrire le dernier lot
+        last_docs, last_metas, last_ids = prev_batch
+        logger.info(f"Pipeline : flush final de {len(last_docs)} chunks")
+        self._write_to_chromadb(
+            collection, last_docs, last_metas, last_ids, prev_embeddings,
+        )
+        total_indexed += len(last_docs)
+
+        return total_indexed
 
     def index_corpus(self, extractions: list[dict]) -> int:
         """Indexe le corpus dans ChromaDB — Pipeline Batch Embedding + sécurité RAM.
 
         Phase 4 (Perf) : vectorisation de masse par lots Transformer.
+        Phase 4.2 (Perf) : pipeline asynchrone — les embeddings du lot N+1
+        sont calculés pendant que le lot N est écrit dans ChromaDB.
         Phase 5 (Sécurité mémoire) : les chunks sont traités par lots de
         MAX_RAM_BATCH_SIZE pour éviter les OOM sur les très gros corpus.
 
@@ -269,11 +383,11 @@ class RAGEngine:
                 collection.delete(ids=all_ids)
             logger.info(f"Collection existante vidée ({existing} blocs supprimés)")
 
-        # ── Collecte et indexation par lots RAM-safe ──
+        # ── Collecte de tous les lots ──
+        batches: list[tuple[list[str], list[dict], list[str]]] = []
         documents: list[str] = []
         metadatas: list[dict] = []
         ids: list[str] = []
-        total_indexed = 0
 
         for extraction in extractions:
             text = extraction.get("text", "")
@@ -299,24 +413,21 @@ class RAGEngine:
                 metadatas.append(chunk_meta)
                 ids.append(doc_id)
 
-                # Flush dès que le lot RAM atteint la limite
+                # Collecter le lot dès que la limite RAM est atteinte
                 if len(documents) >= MAX_RAM_BATCH_SIZE:
-                    logger.info(
-                        f"Batch Embedding RAM-safe : flush de {len(documents)} chunks "
-                        f"(total indexé : {total_indexed})"
-                    )
-                    self._flush_batch(collection, documents, metadatas, ids)
-                    total_indexed += len(documents)
+                    batches.append((list(documents), list(metadatas), list(ids)))
                     documents.clear()
                     metadatas.clear()
                     ids.clear()
 
-        # Flush du lot résiduel
+        # Lot résiduel
         if documents:
-            logger.info(f"Batch Embedding : flush final de {len(documents)} chunks")
-            self._flush_batch(collection, documents, metadatas, ids)
-            total_indexed += len(documents)
+            batches.append((list(documents), list(metadatas), list(ids)))
 
+        # ── Indexation pipelinée ──
+        total_indexed = self._pipeline_index_batches(collection, batches)
+
+        self._invalidate_search_cache()
         logger.info(f"Corpus indexé dans ChromaDB : {total_indexed} blocs depuis {len(extractions)} documents")
         return total_indexed
 
@@ -324,6 +435,8 @@ class RAGEngine:
         """Indexe le corpus avec les chunks sémantiques — Pipeline Batch Embedding + sécurité RAM.
 
         Phase 4 (Perf) : vectorisation de masse par lots Transformer.
+        Phase 4.2 (Perf) : pipeline asynchrone — les embeddings du lot N+1
+        sont calculés pendant que le lot N est écrit dans ChromaDB.
         Phase 5 (Sécurité mémoire) : les chunks sont traités par lots de
         MAX_RAM_BATCH_SIZE pour éviter les OOM sur les très gros corpus.
 
@@ -343,11 +456,11 @@ class RAGEngine:
             if all_ids:
                 collection.delete(ids=all_ids)
 
-        # ── Collecte et indexation par lots RAM-safe ──
+        # ── Collecte de tous les lots ──
+        batches: list[tuple[list[str], list[dict], list[str]]] = []
         documents: list[str] = []
         metadatas: list[dict] = []
         ids: list[str] = []
-        total_indexed = 0
 
         for doc_id, chunks in chunks_by_doc.items():
             for chunk in chunks:
@@ -362,14 +475,9 @@ class RAGEngine:
                 })
                 ids.append(chunk.chunk_id)
 
-                # Flush dès que le lot RAM atteint la limite
+                # Collecter le lot dès que la limite RAM est atteinte
                 if len(documents) >= MAX_RAM_BATCH_SIZE:
-                    logger.info(
-                        f"Batch Embedding sémantique RAM-safe : flush de {len(documents)} chunks "
-                        f"(total indexé : {total_indexed})"
-                    )
-                    self._flush_batch(collection, documents, metadatas, ids)
-                    total_indexed += len(documents)
+                    batches.append((list(documents), list(metadatas), list(ids)))
                     documents.clear()
                     metadatas.clear()
                     ids.clear()
@@ -378,12 +486,14 @@ class RAGEngine:
             if metadata_store:
                 metadata_store.add_chunks(chunks)
 
-        # Flush du lot résiduel
+        # Lot résiduel
         if documents:
-            logger.info(f"Batch Embedding sémantique : flush final de {len(documents)} chunks")
-            self._flush_batch(collection, documents, metadatas, ids)
-            total_indexed += len(documents)
+            batches.append((list(documents), list(metadatas), list(ids)))
 
+        # ── Indexation pipelinée ──
+        total_indexed = self._pipeline_index_batches(collection, batches)
+
+        self._invalidate_search_cache()
         logger.info(f"Corpus indexé (sémantique) : {total_indexed} chunks")
         return total_indexed
 
@@ -535,6 +645,10 @@ class RAGEngine:
     def search_for_section(self, section_id: str, section_title: str, section_description: str = "") -> RAGResult:
         """Recherche les blocs pertinents pour une section du plan.
 
+        Phase 4.1 (Perf) : les résultats sont mis en cache par (section_id, query)
+        pour éviter les recherches redondantes (factcheck, qualité, etc.).
+        Le cache est invalidé à chaque reset() ou nouvel index_corpus().
+
         Args:
             section_id: Identifiant de la section.
             section_title: Titre de la section.
@@ -547,9 +661,18 @@ class RAGEngine:
         if section_description:
             query = f"{section_title}. {section_description}"
 
+        cache_key = f"{section_id}::{query}"
+        with self._search_cache_lock:
+            if cache_key in self._search_cache:
+                return self._search_cache[cache_key]
+
         result = self.search(query)
         result.section_id = section_id
         result.section_title = section_title
+
+        with self._search_cache_lock:
+            self._search_cache[cache_key] = result
+
         return result
 
     def search_corpus(
@@ -717,7 +840,13 @@ class RAGEngine:
             except Exception:
                 pass
             self._collection = None
+        self._invalidate_search_cache()
         logger.info("Collection RAG réinitialisée")
+
+    def _invalidate_search_cache(self) -> None:
+        """Invalide le cache de recherche (appelé après indexation ou reset)."""
+        with self._search_cache_lock:
+            self._search_cache.clear()
 
     @property
     def indexed_count(self) -> int:
