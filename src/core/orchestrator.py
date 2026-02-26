@@ -881,6 +881,7 @@ class Orchestrator:
                     content=content,
                     section_title=section.title,
                     section_description=section.description or "",
+                    corpus_chunks=corpus_chunks,
                 )
                 with self._state_lock:
                     self.state.factcheck_reports[section.id] = fc_report.to_dict()

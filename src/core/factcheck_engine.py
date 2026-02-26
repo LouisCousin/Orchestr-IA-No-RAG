@@ -2,11 +2,15 @@
 
 Phase 3 : vérifie chaque affirmation générée contre le corpus source
 via un pipeline en 3 étapes (extraction, corroboration, évaluation).
+Phase 4 (Perf) : évaluation parallèle des claims via ThreadPoolExecutor,
+           réutilisation des corpus_chunks déjà récupérés par l'orchestrateur.
 """
 
 import json
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -162,6 +166,7 @@ class FactcheckEngine:
         auto_correct_threshold: float = 80.0,
         max_claims_per_section: int = 30,
         factcheck_model: Optional[str] = None,
+        max_concurrent_evaluations: int = 5,
     ):
         self.provider = provider
         self.rag_engine = rag_engine
@@ -170,6 +175,7 @@ class FactcheckEngine:
         self.auto_correct_threshold = auto_correct_threshold
         self.max_claims = max_claims_per_section
         self.factcheck_model = factcheck_model
+        self.max_concurrent_evaluations = max_concurrent_evaluations
 
     def check_section(
         self,
@@ -177,6 +183,7 @@ class FactcheckEngine:
         content: str,
         section_title: str = "",
         section_description: str = "",
+        corpus_chunks: Optional[list] = None,
     ) -> FactcheckReport:
         """Vérifie une section complète.
 
@@ -185,6 +192,8 @@ class FactcheckEngine:
             content: Contenu généré à vérifier.
             section_title: Titre de la section (pour la recherche RAG).
             section_description: Description de la section.
+            corpus_chunks: Chunks de corpus déjà récupérés par l'orchestrateur
+                (Phase 4 Perf — évite une recherche RAG redondante).
 
         Returns:
             Rapport de vérification factuelle.
@@ -195,14 +204,18 @@ class FactcheckEngine:
         word_count = len(content.split())
         model = self.factcheck_model or self.provider.get_default_model()
 
-        # Get corpus excerpts for corroboration
-        corpus_text = self._get_corpus_excerpts(section_title, section_description)
+        # Phase 4 (Perf) : réutiliser les corpus_chunks déjà récupérés
+        # par l'orchestrateur au lieu de refaire une recherche RAG.
+        if corpus_chunks:
+            corpus_text = self._format_corpus_chunks(corpus_chunks)
+        else:
+            corpus_text = self._get_corpus_excerpts(section_title, section_description)
 
         if word_count < 2000 and corpus_text:
             # Short section: combined extraction + evaluation
             report = self._check_combined(section_id, content, corpus_text, model)
         else:
-            # Long section: extract claims first, then evaluate individually
+            # Long section: extract claims first, then evaluate in parallel
             claims = self._extract_claims(content, model)
             report = self._evaluate_claims(section_id, claims, corpus_text, model)
 
@@ -211,6 +224,16 @@ class FactcheckEngine:
             self._save_report(report)
 
         return report
+
+    @staticmethod
+    def _format_corpus_chunks(corpus_chunks: list) -> str:
+        """Formate les corpus_chunks déjà récupérés en texte pour le factcheck."""
+        excerpts = []
+        for chunk in corpus_chunks[:5]:
+            text = chunk.get("text", "") if isinstance(chunk, dict) else getattr(chunk, "text", str(chunk))
+            source = chunk.get("source_file", "") if isinstance(chunk, dict) else getattr(chunk, "source_file", "")
+            excerpts.append(f"[{source}] {text[:500]}")
+        return "\n---\n".join(excerpts)
 
     def should_correct(self, report: FactcheckReport) -> bool:
         """Détermine si une correction automatique est nécessaire."""
@@ -302,61 +325,74 @@ class FactcheckEngine:
     def _evaluate_claims(
         self, section_id: str, claims: list[dict], corpus_text: str, model: str
     ) -> FactcheckReport:
-        """Étape 2+3 : évaluation de chaque affirmation."""
+        """Étape 2+3 : évaluation parallèle des affirmations.
+
+        Phase 4 (Perf) : utilise ThreadPoolExecutor pour évaluer les claims
+        en parallèle au lieu de séquentiellement. Limité par un sémaphore
+        pour respecter le rate-limiting des APIs.
+        """
         if not claims:
             return FactcheckReport(section_id=section_id, reliability_score=100.0)
 
-        results = []
-        for claim in claims:
-            claim_text = claim.get("text", "")
-            if not claim_text:
-                continue
+        valid_claims = [c for c in claims if c.get("text", "")]
+        if not valid_claims:
+            return FactcheckReport(section_id=section_id, reliability_score=100.0)
 
-            # Recherche RAG spécifique à l'affirmation
+        # Sémaphore pour limiter la concurrence API
+        semaphore = threading.Semaphore(self.max_concurrent_evaluations)
+        results_lock = threading.Lock()
+        results = []
+
+        def evaluate_single(claim: dict) -> dict:
+            """Évalue une seule affirmation (thread-safe)."""
+            claim_text = claim["text"]
+
+            # Phase 4 (Perf) : utilise le corpus_text global au lieu de
+            # faire une recherche RAG par claim (optim #4).
             specific_corpus = corpus_text
-            if self.rag_engine:
-                try:
-                    result = self.rag_engine.search_for_section("factcheck", claim_text, "")
-                    excerpts = []
-                    for chunk in result.chunks[:3]:
-                        text = chunk.get("text", "") if isinstance(chunk, dict) else getattr(chunk, "text", "")
-                        excerpts.append(text[:400])
-                    if excerpts:
-                        specific_corpus = "\n---\n".join(excerpts)
-                except Exception:
-                    pass
 
             prompt = EVALUATION_PROMPT.format(
                 claim=claim_text,
                 corpus_excerpts=specific_corpus[:2000] if specific_corpus else "Aucun extrait de corpus disponible.",
             )
 
-            try:
-                response = self.provider.generate(
-                    prompt=prompt,
-                    system_prompt="Tu es un vérificateur factuel. Retourne uniquement du JSON valide.",
-                    model=model,
-                    temperature=0.1,
-                    max_tokens=300,
-                )
-                eval_data = self._parse_json_response(response.content)
-                status = eval_data.get("status", PLAUSIBLE)
-                # Normalize status
-                status = self._normalize_status(status)
-                results.append({
-                    "id": claim.get("id", len(results) + 1),
-                    "text": claim_text,
-                    "status": status,
-                    "justification": eval_data.get("justification", ""),
-                })
-            except Exception as e:
-                logger.warning(f"Évaluation d'affirmation échouée : {e}")
-                results.append({
-                    "id": claim.get("id", len(results) + 1),
-                    "text": claim_text,
-                    "status": PLAUSIBLE,
-                    "justification": "Évaluation impossible.",
-                })
+            with semaphore:
+                try:
+                    response = self.provider.generate(
+                        prompt=prompt,
+                        system_prompt="Tu es un vérificateur factuel. Retourne uniquement du JSON valide.",
+                        model=model,
+                        temperature=0.1,
+                        max_tokens=300,
+                    )
+                    eval_data = self._parse_json_response(response.content)
+                    status = self._normalize_status(eval_data.get("status", PLAUSIBLE))
+                    return {
+                        "id": claim.get("id", 0),
+                        "text": claim_text,
+                        "status": status,
+                        "justification": eval_data.get("justification", ""),
+                    }
+                except Exception as e:
+                    logger.warning(f"Évaluation d'affirmation échouée : {e}")
+                    return {
+                        "id": claim.get("id", 0),
+                        "text": claim_text,
+                        "status": PLAUSIBLE,
+                        "justification": "Évaluation impossible.",
+                    }
+
+        max_workers = min(self.max_concurrent_evaluations, len(valid_claims))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(evaluate_single, claim): claim
+                for claim in valid_claims
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+
+        # Trier par id pour un ordre déterministe
+        results.sort(key=lambda r: r.get("id", 0))
 
         return self._build_report(section_id, {"claims": results})
 
