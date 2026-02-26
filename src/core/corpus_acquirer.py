@@ -2,13 +2,16 @@
 
 Phase 4 (Perf) : téléchargement asynchrone via aiohttp + aiofiles,
                   déduplication par URL/nom de fichier avant requête HTTP,
-                  écriture disque non-bloquante.
+                  écriture disque non-bloquante,
+                  extraction parallèle des fichiers locaux via ProcessPoolExecutor
+                  avec gestion dynamique des workers (RAM/CPU).
 """
 
 import asyncio
 import logging
 import shutil
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -83,9 +86,18 @@ class CorpusAcquirer:
         return self._session
 
     def acquire_local_files(self, file_paths: list[Path], report: Optional[AcquisitionReport] = None) -> AcquisitionReport:
-        """Copie des fichiers locaux dans le dossier corpus."""
+        """Copie des fichiers locaux dans le dossier corpus puis lance l'extraction en parallèle.
+
+        Phase 4 (Perf) : après la copie séquentielle (thread-safe pour les I/O disque
+        et les numéros de séquence), l'extraction de texte est parallélisée via
+        ProcessPoolExecutor avec un nombre de workers calculé dynamiquement
+        selon la RAM et le CPU disponibles.
+        """
         if report is None:
             report = AcquisitionReport()
+
+        # ── Étape 1 : Copie séquentielle (I/O disque + numérotation thread-safe) ──
+        copied_files: list[tuple[Path, Path, str]] = []  # (source, dest, dest_name)
 
         for path in file_paths:
             path = Path(path)
@@ -109,6 +121,7 @@ class CorpusAcquirer:
                 dest_path = self.corpus_dir / dest_name
                 shutil.copy2(path, dest_path)
 
+                copied_files.append((path, dest_path, dest_name))
                 report.add(AcquisitionStatus(
                     source=str(path), status="SUCCESS",
                     destination=str(dest_path),
@@ -123,6 +136,38 @@ class CorpusAcquirer:
                     message=f"Erreur : {e}"
                 ))
                 logger.error(f"Erreur acquisition fichier {path}: {e}")
+
+        # ── Étape 2 : Extraction parallèle des fichiers copiés ──
+        if copied_files:
+            try:
+                from src.core.text_extractor import compute_optimal_workers, extract
+
+                max_workers = compute_optimal_workers()
+                logger.info(
+                    f"Extraction parallèle de {len(copied_files)} fichiers "
+                    f"avec {max_workers} workers"
+                )
+
+                with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(extract, dest_path): (source, dest_path, dest_name)
+                        for source, dest_path, dest_name in copied_files
+                    }
+                    for future in as_completed(futures):
+                        source, dest_path, dest_name = futures[future]
+                        try:
+                            extraction_result = future.result()
+                            logger.info(
+                                f"Extraction terminée : {dest_name} "
+                                f"({extraction_result.status}, {extraction_result.word_count} mots)"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Échec extraction parallèle pour {dest_name}: {e}")
+
+            except ImportError:
+                logger.warning("text_extractor non disponible, extraction parallèle ignorée")
+            except Exception as e:
+                logger.warning(f"Extraction parallèle échouée : {e}")
 
         return report
 

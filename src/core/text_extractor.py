@@ -4,6 +4,7 @@ Supporte : PDF (docling → pymupdf → pdfplumber → PyPDF2), DOCX, HTML, TXT/
 Phase 2.5 : ajout de Docling comme extracteur PDF prioritaire avec structure sémantique.
 Phase 4 (Perf) : parallélisation ProcessPoolExecutor + psutil pour gestion dynamique des ressources,
                   cache par hash pour éviter les ré-extractions, singleton DocumentConverter par worker.
+                  compute_optimal_workers() est publique pour réutilisation par d'autres modules.
 """
 
 import gc
@@ -163,11 +164,14 @@ def _extract_sections_from_docling_result(result) -> list[dict]:
 # --- Gestion dynamique des ressources (Smart Resources) ---
 
 
-def _compute_optimal_workers() -> int:
+def compute_optimal_workers() -> int:
     """Calcule le nombre optimal de workers selon RAM et CPU disponibles.
 
     Formule : workers = min(CPU_COUNT, (RAM_DISPO_GB - 2GB_SECURITY) // 1.5GB_PER_WORKER)
     Fallback : toujours au moins 1 worker.
+
+    Cette fonction est publique pour être réutilisée par d'autres modules
+    (ex: corpus_acquirer pour la parallélisation de l'extraction).
     """
     try:
         import psutil
@@ -313,7 +317,7 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
 
     if total_pages > batch_threshold:
         # ── Mode batch parallèle : ProcessPoolExecutor avec singleton Docling ──
-        max_workers = _compute_optimal_workers()
+        max_workers = compute_optimal_workers()
 
         # Construire les plages de pages
         page_ranges = []

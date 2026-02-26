@@ -8,6 +8,7 @@ Phase 2.5 : pipeline hybride complet avec :
   - Enrichissement des métadonnées
 Phase 4 (Perf) : pipeline "Batch Embedding" — collecte de tous les chunks
   puis vectorisation de masse pour exploiter le parallélisme des Transformers.
+  Support des providers d'embeddings externes (OpenAI, Gemini) via config.
 Phase 5 (Sécurité mémoire) : segmentation RAM par lots de MAX_RAM_BATCH_SIZE
   pour éviter les OOM sur les très gros corpus (500k+ chunks).
 """
@@ -76,9 +77,16 @@ class RAGEngine:
         self.config = config or {}
         self._client = None
         self._collection = None
-        self._use_local_embeddings = self.config.get("rag", {}).get("embedding_mode", "local") == "local"
-        self._reranking_enabled = self.config.get("rag", {}).get("reranking_enabled", True)
-        self._initial_candidates = self.config.get("rag", {}).get("initial_candidates", 20)
+        rag_cfg = self.config.get("rag", {})
+        self._embedding_provider = rag_cfg.get("embedding_provider", "local")
+        self._embedding_model = rag_cfg.get("embedding_model", "text-embedding-3-small")
+        self._embedding_batch_size = rag_cfg.get("batch_size", 512)
+        self._use_local_embeddings = (
+            self._embedding_provider == "local"
+            and rag_cfg.get("embedding_mode", "local") == "local"
+        )
+        self._reranking_enabled = rag_cfg.get("reranking_enabled", True)
+        self._initial_candidates = rag_cfg.get("initial_candidates", 20)
 
     def _get_client(self):
         """Initialise le client ChromaDB (lazy)."""
@@ -101,10 +109,22 @@ class RAGEngine:
         return self._collection
 
     def _get_embeddings(self, texts: list[str], mode: str = "document") -> list[list[float]]:
-        """Calcule les embeddings en local ou via API.
+        """Calcule les embeddings en local ou via API externe.
 
         Phase 2.5 : utilise les embeddings locaux par défaut.
+        Phase 4 (Perf) : support des providers externes (OpenAI, Gemini) pour
+        accélération vectorielle (GPU côté serveur, pas de dépendance locale).
+        Le batch_size est configurable en YAML (défaut: 512).
         """
+        # ── Provider OpenAI ──
+        if self._embedding_provider == "openai":
+            return self._get_embeddings_openai(texts)
+
+        # ── Provider Gemini ──
+        if self._embedding_provider == "gemini":
+            return self._get_embeddings_gemini(texts)
+
+        # ── Provider local (défaut) ──
         if self._use_local_embeddings:
             try:
                 from src.core.local_embedder import LocalEmbedder
@@ -112,12 +132,73 @@ class RAGEngine:
                 if mode == "query":
                     return [embedder.embed_query(t) for t in texts]
                 else:
-                    return embedder.embed_documents(texts)
+                    return embedder.embed_documents(texts, batch_size=self._embedding_batch_size)
             except ImportError:
                 logger.warning("Embeddings locaux non disponibles, utilisation des embeddings ChromaDB par défaut")
                 self._use_local_embeddings = False
         # Fallback : ChromaDB gère les embeddings en interne
         return []
+
+    def _get_embeddings_openai(self, texts: list[str]) -> list[list[float]]:
+        """Calcule les embeddings via l'API OpenAI par lots.
+
+        Respecte le batch_size configuré pour éviter les limites de l'API.
+        """
+        try:
+            import openai
+
+            all_embeddings: list[list[float]] = []
+            batch_size = self._embedding_batch_size
+
+            for start in range(0, len(texts), batch_size):
+                batch = texts[start:start + batch_size]
+                response = openai.embeddings.create(
+                    input=batch,
+                    model=self._embedding_model,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                all_embeddings.extend(batch_embeddings)
+
+            logger.info(f"Embeddings OpenAI : {len(all_embeddings)} vecteurs via {self._embedding_model}")
+            return all_embeddings
+
+        except ImportError:
+            logger.warning("openai non installé, fallback embeddings ChromaDB")
+            return []
+        except Exception as e:
+            logger.warning(f"Erreur embeddings OpenAI : {e}, fallback ChromaDB")
+            return []
+
+    def _get_embeddings_gemini(self, texts: list[str]) -> list[list[float]]:
+        """Calcule les embeddings via l'API Google Gemini par lots."""
+        try:
+            import google.generativeai as genai
+
+            all_embeddings: list[list[float]] = []
+            batch_size = self._embedding_batch_size
+
+            for start in range(0, len(texts), batch_size):
+                batch = texts[start:start + batch_size]
+                result = genai.embed_content(
+                    model=f"models/{self._embedding_model}",
+                    content=batch,
+                    task_type="retrieval_document",
+                )
+                if isinstance(result["embedding"], list) and result["embedding"]:
+                    if isinstance(result["embedding"][0], list):
+                        all_embeddings.extend(result["embedding"])
+                    else:
+                        all_embeddings.append(result["embedding"])
+
+            logger.info(f"Embeddings Gemini : {len(all_embeddings)} vecteurs via {self._embedding_model}")
+            return all_embeddings
+
+        except ImportError:
+            logger.warning("google-generativeai non installé, fallback embeddings ChromaDB")
+            return []
+        except Exception as e:
+            logger.warning(f"Erreur embeddings Gemini : {e}, fallback ChromaDB")
+            return []
 
     def _flush_batch(
         self,

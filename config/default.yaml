@@ -96,6 +96,9 @@ rag:
 
   # ── Embeddings ──
   embedding_mode: "local"          # "local" | "api"
+  embedding_provider: "local"      # "local" | "openai" | "gemini"
+  embedding_model: "text-embedding-3-small"  # Modèle API (si provider != "local")
+  batch_size: 512                  # Taille des lots pour embeddings API (augmentée vs 32/64)
   local_model: "intfloat/multilingual-e5-large"
   models_cache_dir: "./models"
 

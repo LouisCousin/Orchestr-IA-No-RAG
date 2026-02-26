@@ -1,12 +1,18 @@
-"""Orchestration séquentielle du pipeline de génération.
+"""Orchestration du pipeline de génération avec pipelining asynchrone.
 
 Phase 2 : mode agentique, passes multiples, mode batch, RAG.
 Phase 3 : intelligence du pipeline — qualité, factcheck, glossaire,
            personas, citations, feedback loop, HITL journal.
+Phase 4 (Perf) : pipelining — la génération de la section N+1 démarre
+           pendant que l'évaluation post-génération de la section N tourne
+           en arrière-plan via un ThreadPoolExecutor. Un verrou (Lock)
+           protège save_state et les mutations de self.state.
 """
 
 import json
 import logging
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -182,6 +188,10 @@ class Orchestrator:
         self.state: Optional[ProjectState] = None
         self._metadata_store = None  # Phase 2.5 : MetadataStore SQLite
         self._last_plan_context = None  # Phase 2.5 : dernier PlanContext pour affichage UI
+        # Phase 4 (Perf) : pipelining — évaluation post-génération en arrière-plan
+        self._background_executor = ThreadPoolExecutor(max_workers=2)
+        self._state_lock = threading.Lock()
+        self._pending_evaluations: list[Future] = []
         # Phase 3 engines (lazy-initialized)
         self._quality_evaluator = None
         self._factcheck_engine = None
@@ -682,7 +692,8 @@ class Orchestrator:
                 # Post-traitement : nettoyage des références [Source N] résiduelles
                 from src.utils.reference_cleaner import clean_source_references
                 content = clean_source_references(response.content)
-                self.state.generated_sections[section.id] = content
+                with self._state_lock:
+                    self.state.generated_sections[section.id] = content
                 section.status = "generated"
                 section.generated_content = content
 
@@ -692,20 +703,22 @@ class Orchestrator:
                     section=section.id,
                 )
 
-                # Phase 3 : évaluation qualité et factcheck post-génération
-                # (may auto-correct content in agentic mode)
-                corrected = self._run_post_generation_evaluation(
-                    section, content, plan, corpus_chunks,
-                    is_refinement=is_refinement,
-                )
-                if corrected:
-                    content = corrected
-
-                # Générer un résumé pour le contexte (passe 1 uniquement)
-                # Done after evaluation so summary reflects final content
+                # Générer un résumé pour le contexte IMMÉDIATEMENT
+                # (nécessaire pour la section suivante — ne peut pas être différé)
                 if not is_refinement:
                     summary = self._generate_summary(section, content, model, system_prompt)
-                    self.state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
+                    with self._state_lock:
+                        self.state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
+
+                # Phase 4 (Perf) : soumettre l'évaluation post-génération en arrière-plan
+                # pour ne pas bloquer la génération de la section suivante.
+                # Le résumé est déjà généré ci-dessus, donc le contexte est prêt.
+                eval_future = self._background_executor.submit(
+                    self._run_post_generation_evaluation_background,
+                    section, content, plan, corpus_chunks,
+                    is_refinement,
+                )
+                self._pending_evaluations.append(eval_future)
 
             except Exception as e:
                 section.status = "failed"
@@ -737,6 +750,17 @@ class Orchestrator:
                     return self.state.generated_sections
 
             self.save_state()
+
+        # Phase 4 (Perf) : attendre la fin de toutes les évaluations en arrière-plan
+        # avant de finaliser la passe.
+        if self._pending_evaluations:
+            logger.info(f"Attente de {len(self._pending_evaluations)} évaluations en arrière-plan...")
+            for future in self._pending_evaluations:
+                try:
+                    future.result()  # Attendre la fin
+                except Exception as e:
+                    logger.warning(f"Évaluation en arrière-plan échouée : {e}")
+            self._pending_evaluations.clear()
 
         if progress_callback:
             progress_callback("Génération terminée !", 1.0)
@@ -802,6 +826,32 @@ class Orchestrator:
 
         return self.generate_all_sections(pass_number=self.state.current_pass if self.state else 1)
 
+    def _run_post_generation_evaluation_background(
+        self,
+        section: PlanSection,
+        content: str,
+        plan: NormalizedPlan,
+        corpus_chunks: list,
+        is_refinement: bool = False,
+    ) -> None:
+        """Wrapper thread-safe pour l'évaluation post-génération en arrière-plan.
+
+        Phase 4 (Perf) : exécuté dans le _background_executor. Les mutations
+        de self.state sont protégées par self._state_lock.
+        """
+        try:
+            corrected = self._run_post_generation_evaluation(
+                section, content, plan, corpus_chunks,
+                is_refinement=is_refinement,
+            )
+            if corrected:
+                with self._state_lock:
+                    self.state.generated_sections[section.id] = corrected
+                    section.generated_content = corrected
+            self.save_state()
+        except Exception as e:
+            logger.warning(f"Évaluation arrière-plan échouée pour {section.id}: {e}")
+
     def _run_post_generation_evaluation(
         self,
         section: PlanSection,
@@ -832,7 +882,8 @@ class Orchestrator:
                     section_title=section.title,
                     section_description=section.description or "",
                 )
-                self.state.factcheck_reports[section.id] = fc_report.to_dict()
+                with self._state_lock:
+                    self.state.factcheck_reports[section.id] = fc_report.to_dict()
                 # A score of -1.0 means the factcheck failed; treat as unavailable
                 if fc_report.reliability_score >= 0:
                     factcheck_score = fc_report.reliability_score
@@ -861,7 +912,8 @@ class Orchestrator:
                     previous_summaries=self.state.section_summaries,
                     factcheck_score=factcheck_score,
                 )
-                self.state.quality_reports[section.id] = qr.to_dict()
+                with self._state_lock:
+                    self.state.quality_reports[section.id] = qr.to_dict()
                 self.activity_log.info(
                     f"Qualité {section.id}: {qr.global_score:.2f}/5.0",
                     section=section.id,
@@ -885,10 +937,11 @@ class Orchestrator:
                 citations = self._citation_engine.extract_inline_citations(content)
                 if citations:
                     resolved = self._citation_engine.resolve_citations(citations)
-                    self.state.citations[section.id] = [
-                        {"raw": c.raw_text, "doc_id": c.resolved_doc_id}
-                        for c in resolved
-                    ]
+                    with self._state_lock:
+                        self.state.citations[section.id] = [
+                            {"raw": c.raw_text, "doc_id": c.resolved_doc_id}
+                            for c in resolved
+                        ]
             except Exception as e:
                 logger.warning(f"Résolution des citations échouée pour {section.id}: {e}")
 
@@ -977,8 +1030,9 @@ class Orchestrator:
 
             from src.utils.reference_cleaner import clean_source_references
             corrected = clean_source_references(response.content)
-            self.state.generated_sections[section.id] = corrected
-            section.generated_content = corrected
+            with self._state_lock:
+                self.state.generated_sections[section.id] = corrected
+                section.generated_content = corrected
 
             self.activity_log.success(
                 f"Auto-correction {section.id} terminée ({response.output_tokens} tokens)",
@@ -1006,7 +1060,8 @@ class Orchestrator:
                 corrected=modified_content,
             )
             if entry and self.state:
-                self.state.feedback_history.append(entry.to_dict())
+                with self._state_lock:
+                    self.state.feedback_history.append(entry.to_dict())
                 self.activity_log.info(
                     f"Feedback analysé pour {section_id}: catégorie={entry.category}",
                     section=section_id,
@@ -1058,10 +1113,16 @@ class Orchestrator:
         logger.debug(f"Modèle {model} non trouvé dans les tarifs, vérification de contexte ignorée")
 
     def save_state(self) -> None:
-        """Sauvegarde l'état du projet sur disque."""
-        if self.state:
-            state_path = self.project_dir / "state.json"
-            save_json(state_path, self.state.to_dict())
+        """Sauvegarde l'état du projet sur disque (thread-safe).
+
+        Phase 4 (Perf) : protégé par un verrou pour éviter les conflits
+        entre le thread principal (génération) et les tâches de fond
+        (factcheck, qualité) qui modifient self.state simultanément.
+        """
+        with self._state_lock:
+            if self.state:
+                state_path = self.project_dir / "state.json"
+                save_json(state_path, self.state.to_dict())
 
     def load_state(self) -> Optional[ProjectState]:
         """Charge l'état du projet depuis le disque."""
