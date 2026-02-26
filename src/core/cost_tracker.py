@@ -173,7 +173,7 @@ class CostTracker:
             return {"error": f"Tarifs non trouvés pour {provider}/{model}"}
 
         total_tokens = sum(doc.get("tokens", 0) for doc in documents)
-        input_cost = (total_tokens / 1_000_000) * pricing["input"]
+        input_cost = (total_tokens / 1_000_000) * pricing.get("input", 0)
 
         return {
             "total_documents": len(documents),

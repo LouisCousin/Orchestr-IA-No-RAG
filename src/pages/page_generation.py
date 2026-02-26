@@ -293,6 +293,11 @@ def _run_generation(state, provider, tracker):
                     count = orchestrator.index_corpus_rag()
                     st.info(f"Corpus indexé : {count} blocs dans ChromaDB")
 
+    # Initialize Phase 3 engines (glossary, persona, persistent instructions,
+    # citations, etc.) BEFORE the generation loop so that the PromptEngine
+    # already has Phase 3 parameters when building prompts for the first section.
+    orchestrator._ensure_phase3_engine()
+
     num_passes = state.config.get("number_of_passes", 1)
 
     progress_bar = st.progress(0, text="Démarrage de la génération...")
@@ -368,7 +373,8 @@ def _run_generation(state, provider, tracker):
                 )
 
             system_prompt = orchestrator.prompt_engine.build_system_prompt(
-                has_corpus=bool(corpus_chunks)
+                has_corpus=bool(corpus_chunks),
+                section_id=section.id,
             )
 
             try:
