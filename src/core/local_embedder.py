@@ -13,6 +13,7 @@ Note : sentence-transformers reste installé pour le Reranker (cross-encoder).
 
 import logging
 import os
+import threading
 from typing import Optional
 
 logger = logging.getLogger("orchestria")
@@ -25,6 +26,7 @@ class LocalEmbedder:
     """Calcul d'embeddings en local avec FastEmbed (ONNX Quantized)."""
 
     _instance: Optional["LocalEmbedder"] = None
+    _lock = threading.Lock()
 
     def __init__(self, model_name: Optional[str] = None, cache_dir: Optional[str] = None):
         self._model_name = model_name or DEFAULT_MODEL
@@ -52,9 +54,11 @@ class LocalEmbedder:
 
     @classmethod
     def get_instance(cls, model_name: Optional[str] = None, cache_dir: Optional[str] = None) -> "LocalEmbedder":
-        """Retourne l'instance singleton (le modèle est lourd à charger)."""
+        """Retourne l'instance singleton (thread-safe, le modèle est lourd à charger)."""
         if cls._instance is None:
-            cls._instance = cls(model_name, cache_dir)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls(model_name, cache_dir)
         return cls._instance
 
     @classmethod
