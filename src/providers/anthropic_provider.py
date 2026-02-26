@@ -126,6 +126,7 @@ class AnthropicProvider(BaseProvider):
             params = {
                 "model": model,
                 "max_tokens": req.max_tokens,
+                "temperature": req.temperature,
                 "messages": [{"role": "user", "content": req.prompt}],
             }
             if req.system_prompt:

@@ -77,6 +77,12 @@ class RAGEngine:
         self.collection_name = collection_name
         self.persist_dir = persist_dir
         self.chunk_size = chunk_size
+        if chunk_overlap >= chunk_size:
+            logger.warning(
+                f"chunk_overlap ({chunk_overlap}) >= chunk_size ({chunk_size}), "
+                f"resetting overlap to chunk_size // 4 ({chunk_size // 4})"
+            )
+            chunk_overlap = chunk_size // 4
         self.chunk_overlap = chunk_overlap
         self.top_k = top_k
         self.relevance_threshold = relevance_threshold

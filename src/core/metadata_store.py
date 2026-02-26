@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -106,18 +107,21 @@ class MetadataStore:
     def __init__(self, project_path: str):
         self.db_path = os.path.join(project_path, "metadata.db")
         self._conn: Optional[sqlite3.Connection] = None
+        self._db_lock = threading.Lock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            # check_same_thread=False is required because the orchestrator
-            # accesses the store from background ThreadPoolExecutor threads
-            # (Phase 3 evaluation, Phase 4 pipelining).  WAL mode ensures
-            # concurrent reads remain safe.
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
+            with self._db_lock:
+                if self._conn is None:
+                    # check_same_thread=False is required because the orchestrator
+                    # accesses the store from background ThreadPoolExecutor threads
+                    # (Phase 3 evaluation, Phase 4 pipelining).  WAL mode ensures
+                    # concurrent reads remain safe; _db_lock protects writes.
+                    self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                    self._conn.row_factory = sqlite3.Row
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+                    self._conn.execute("PRAGMA foreign_keys=ON")
         return self._conn
 
     def _init_db(self) -> None:
@@ -139,26 +143,27 @@ class MetadataStore:
         """Ajoute un document à la base."""
         conn = self._get_conn()
         now = datetime.now().isoformat()
-        conn.execute(
-            """INSERT OR REPLACE INTO documents
-            (doc_id, filepath, filename, title, authors, year, language,
-             doc_type, page_count, token_count, char_count, word_count,
-             extraction_method, extraction_status, hash_binary, hash_textual,
-             dedup_status, dedup_original_id, journal, volume, issue,
-             pages_range, doi, publisher, apa_reference, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                doc.doc_id, doc.filepath, doc.filename, doc.title, doc.authors,
-                doc.year, doc.language, doc.doc_type, doc.page_count,
-                doc.token_count, doc.char_count, doc.word_count,
-                doc.extraction_method, doc.extraction_status,
-                doc.hash_binary, doc.hash_textual, doc.dedup_status,
-                doc.dedup_original_id, doc.journal, doc.volume, doc.issue,
-                doc.pages_range, doc.doi, doc.publisher, doc.apa_reference,
-                doc.created_at or now, now,
-            ),
-        )
-        conn.commit()
+        with self._db_lock:
+            conn.execute(
+                """INSERT OR REPLACE INTO documents
+                (doc_id, filepath, filename, title, authors, year, language,
+                 doc_type, page_count, token_count, char_count, word_count,
+                 extraction_method, extraction_status, hash_binary, hash_textual,
+                 dedup_status, dedup_original_id, journal, volume, issue,
+                 pages_range, doi, publisher, apa_reference, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    doc.doc_id, doc.filepath, doc.filename, doc.title, doc.authors,
+                    doc.year, doc.language, doc.doc_type, doc.page_count,
+                    doc.token_count, doc.char_count, doc.word_count,
+                    doc.extraction_method, doc.extraction_status,
+                    doc.hash_binary, doc.hash_textual, doc.dedup_status,
+                    doc.dedup_original_id, doc.journal, doc.volume, doc.issue,
+                    doc.pages_range, doc.doi, doc.publisher, doc.apa_reference,
+                    doc.created_at or now, now,
+                ),
+            )
+            conn.commit()
 
     def get_document(self, doc_id: str) -> Optional[DocumentMetadata]:
         """Récupère un document par son ID."""
@@ -182,15 +187,17 @@ class MetadataStore:
         fields["updated_at"] = datetime.now().isoformat()
         set_clause = ", ".join(f"{k} = ?" for k in fields)
         values = list(fields.values()) + [doc_id]
-        conn.execute(f"UPDATE documents SET {set_clause} WHERE doc_id = ?", values)
-        conn.commit()
+        with self._db_lock:
+            conn.execute(f"UPDATE documents SET {set_clause} WHERE doc_id = ?", values)
+            conn.commit()
 
     def delete_document(self, doc_id: str) -> None:
         """Supprime un document et ses chunks."""
         conn = self._get_conn()
-        conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
-        conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-        conn.commit()
+        with self._db_lock:
+            conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+            conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+            conn.commit()
 
     def search_documents(
         self,
@@ -245,18 +252,19 @@ class MetadataStore:
             chunks: Liste d'objets Chunk (du module semantic_chunker).
         """
         conn = self._get_conn()
-        for chunk in chunks:
-            conn.execute(
-                """INSERT OR REPLACE INTO chunks
-                (chunk_id, doc_id, text, page_number, section_title, chunk_index, token_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    chunk.chunk_id, chunk.doc_id, chunk.text,
-                    chunk.page_number, chunk.section_title,
-                    chunk.chunk_index, chunk.token_count,
-                ),
-            )
-        conn.commit()
+        with self._db_lock:
+            for chunk in chunks:
+                conn.execute(
+                    """INSERT OR REPLACE INTO chunks
+                    (chunk_id, doc_id, text, page_number, section_title, chunk_index, token_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        chunk.chunk_id, chunk.doc_id, chunk.text,
+                        chunk.page_number, chunk.section_title,
+                        chunk.chunk_index, chunk.token_count,
+                    ),
+                )
+            conn.commit()
 
     def get_chunks_by_doc(self, doc_id: str) -> list[dict]:
         """Récupère tous les chunks d'un document, triés par index."""

@@ -340,7 +340,6 @@ class FactcheckEngine:
 
         # Sémaphore pour limiter la concurrence API
         semaphore = threading.Semaphore(self.max_concurrent_evaluations)
-        results_lock = threading.Lock()
         results = []
 
         def evaluate_single(claim: dict) -> dict:

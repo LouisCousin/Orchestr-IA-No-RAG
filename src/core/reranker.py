@@ -10,6 +10,7 @@ Phase 4 (Perf) : détection automatique du device (cuda > mps > cpu).
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -52,6 +53,7 @@ class Reranker:
     """Cross-encoder pour le reranking post-retrieval."""
 
     _instance: Optional["Reranker"] = None
+    _lock = threading.Lock()
 
     def __init__(self, model_name: Optional[str] = None, cache_dir: Optional[str] = None):
         self._model_name = model_name or DEFAULT_RERANKER_MODEL
@@ -89,9 +91,11 @@ class Reranker:
 
     @classmethod
     def get_instance(cls, model_name: Optional[str] = None, cache_dir: Optional[str] = None) -> "Reranker":
-        """Retourne l'instance singleton."""
+        """Retourne l'instance singleton (thread-safe)."""
         if cls._instance is None:
-            cls._instance = cls(model_name, cache_dir)
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls(model_name, cache_dir)
         return cls._instance
 
     @classmethod

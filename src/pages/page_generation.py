@@ -590,8 +590,8 @@ def _render_review(state):
                             try:
                                 orchestrator._init_phase3_engines()
                                 orchestrator._run_feedback_analysis(section.id, content, edited)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.warning(f"Feedback analysis failed for {section.id}: {e}")
 
                         state.generated_sections[section.id] = edited
                         section.generated_content = edited
