@@ -69,6 +69,10 @@ class CorpusAcquirer:
         self.throttle_delay = throttle_delay
         self.user_agent = user_agent
         self._session = None
+        # Lock to serialize sequence number allocation in async code,
+        # preventing duplicate filenames when multiple downloads finish
+        # concurrently.
+        self._seq_lock: Optional[asyncio.Lock] = None
 
     def _get_session(self):
         """Crée ou retourne la session HTTP persistante."""
@@ -563,36 +567,44 @@ class CorpusAcquirer:
         except Exception as e:
             return AcquisitionStatus(source=url, status="FAILED", message=f"Échec téléchargement : {e}")
 
+    def _get_seq_lock(self) -> asyncio.Lock:
+        """Lazily create the asyncio lock (must be called inside an event loop)."""
+        if self._seq_lock is None:
+            self._seq_lock = asyncio.Lock()
+        return self._seq_lock
+
     async def _save_bytes_async(
         self, url: str, content: bytes, domain: str, ext: str, content_type: str
     ) -> AcquisitionStatus:
         """Sauvegarde du contenu binaire sur disque via aiofiles (non-bloquant)."""
-        try:
-            import aiofiles
-            seq_num = get_next_sequence_number(self.corpus_dir)
-            dest_name = format_sequence_name(seq_num, domain, ext)
-            dest_path = self.corpus_dir / dest_name
+        # Serialize sequence number + file write to prevent duplicate filenames
+        async with self._get_seq_lock():
+            try:
+                import aiofiles
+                seq_num = get_next_sequence_number(self.corpus_dir)
+                dest_name = format_sequence_name(seq_num, domain, ext)
+                dest_path = self.corpus_dir / dest_name
 
-            async with aiofiles.open(str(dest_path), "wb") as f:
-                await f.write(content)
+                async with aiofiles.open(str(dest_path), "wb") as f:
+                    await f.write(content)
 
-            logger.info(f"Fichier téléchargé (async) : {url} → {dest_name}")
-            return AcquisitionStatus(
-                source=url, status="SUCCESS", destination=str(dest_path),
-                message=f"Téléchargé : {dest_name}",
-                content_type=content_type, file_size=len(content),
-            )
-        except ImportError:
-            # Fallback si aiofiles n'est pas disponible
-            seq_num = get_next_sequence_number(self.corpus_dir)
-            dest_name = format_sequence_name(seq_num, domain, ext)
-            dest_path = self.corpus_dir / dest_name
-            dest_path.write_bytes(content)
-            return AcquisitionStatus(
-                source=url, status="SUCCESS", destination=str(dest_path),
-                message=f"Téléchargé : {dest_name}",
-                content_type=content_type, file_size=len(content),
-            )
+                logger.info(f"Fichier téléchargé (async) : {url} → {dest_name}")
+                return AcquisitionStatus(
+                    source=url, status="SUCCESS", destination=str(dest_path),
+                    message=f"Téléchargé : {dest_name}",
+                    content_type=content_type, file_size=len(content),
+                )
+            except ImportError:
+                # Fallback si aiofiles n'est pas disponible
+                seq_num = get_next_sequence_number(self.corpus_dir)
+                dest_name = format_sequence_name(seq_num, domain, ext)
+                dest_path = self.corpus_dir / dest_name
+                dest_path.write_bytes(content)
+                return AcquisitionStatus(
+                    source=url, status="SUCCESS", destination=str(dest_path),
+                    message=f"Téléchargé : {dest_name}",
+                    content_type=content_type, file_size=len(content),
+                )
 
     async def _save_html_as_text_async(self, url: str, html_content: str, domain: str) -> AcquisitionStatus:
         """Sauvegarde le contenu textuel d'une page HTML de manière asynchrone."""
@@ -607,19 +619,21 @@ class CorpusAcquirer:
                     message="Page de protection anti-bot détectée.",
                 )
 
-            try:
-                import aiofiles
-                seq_num = get_next_sequence_number(self.corpus_dir)
-                dest_name = format_sequence_name(seq_num, domain, ".txt")
-                dest_path = self.corpus_dir / dest_name
+            # Serialize sequence number + file write to prevent duplicate filenames
+            async with self._get_seq_lock():
+                try:
+                    import aiofiles
+                    seq_num = get_next_sequence_number(self.corpus_dir)
+                    dest_name = format_sequence_name(seq_num, domain, ".txt")
+                    dest_path = self.corpus_dir / dest_name
 
-                async with aiofiles.open(str(dest_path), "w", encoding="utf-8") as f:
-                    await f.write(result.text)
-            except ImportError:
-                seq_num = get_next_sequence_number(self.corpus_dir)
-                dest_name = format_sequence_name(seq_num, domain, ".txt")
-                dest_path = self.corpus_dir / dest_name
-                dest_path.write_text(result.text, encoding="utf-8")
+                    async with aiofiles.open(str(dest_path), "w", encoding="utf-8") as f:
+                        await f.write(result.text)
+                except ImportError:
+                    seq_num = get_next_sequence_number(self.corpus_dir)
+                    dest_name = format_sequence_name(seq_num, domain, ".txt")
+                    dest_path = self.corpus_dir / dest_name
+                    dest_path.write_text(result.text, encoding="utf-8")
 
             logger.info(f"Page web extraite (async) : {url} → {dest_name}")
             return AcquisitionStatus(

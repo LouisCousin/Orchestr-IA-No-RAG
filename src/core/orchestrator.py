@@ -727,10 +727,13 @@ class Orchestrator:
                 if self.is_agentic:
                     continue  # En mode agentique, on continue
                 else:
-                    # En mode manuel, créer un checkpoint pour informer l'utilisateur
+                    # En mode manuel, créer un checkpoint pour informer l'utilisateur.
+                    # Use GENERATION checkpoint type so should_pause() can match it
+                    # against the config (the old f"error_{section.id}" never matched
+                    # any CheckpointConfig attribute, making this a silent no-op).
                     if self.checkpoint_mgr:
                         self.checkpoint_mgr.create_checkpoint(
-                            checkpoint_type=f"error_{section.id}",
+                            checkpoint_type=CheckpointType.GENERATION,
                             content=f"Erreur lors de la génération de {section.title}: {e}",
                             section_id=section.id,
                             metadata={"error": str(e)},

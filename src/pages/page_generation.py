@@ -328,10 +328,9 @@ def _run_generation(state, provider, tracker):
                 rag_result = orchestrator.rag_engine.search_for_section(
                     section.id, section.title, section.description or ""
                 )
-                corpus_chunks = [
-                    type("Chunk", (), {"text": c["text"], "source_file": c["source_file"]})()
-                    for c in rag_result.chunks
-                ]
+                # Pass RAG result dicts directly — the prompt engine's
+                # _get_chunk_attr already handles both dicts and objects.
+                corpus_chunks = rag_result.chunks
 
                 if orchestrator.conditional_generator and not is_refinement:
                     assessment = orchestrator.conditional_generator.assess_coverage(rag_result)
@@ -426,6 +425,19 @@ def _run_generation(state, provider, tracker):
                     f"Section {section.id} {task_label} ({response.output_tokens} tokens)",
                     section=section.id,
                 )
+
+                # Phase 3: run post-generation evaluation (quality + factcheck)
+                try:
+                    orchestrator._init_phase3_engines()
+                    corrected = orchestrator._run_post_generation_evaluation(
+                        section, cleaned_content, plan, corpus_chunks,
+                        is_refinement=is_refinement,
+                    )
+                    if corrected:
+                        state.generated_sections[section.id] = corrected
+                        section.generated_content = corrected
+                except Exception as eval_err:
+                    logger.warning(f"Phase 3 evaluation failed for {section.id}: {eval_err}")
 
             except Exception as e:
                 section.status = "failed"
