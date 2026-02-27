@@ -63,6 +63,12 @@ def render():
     with st.expander("Phase 3 — Intelligence du pipeline", expanded=False):
         _render_phase3_config()
 
+    # Phase 5 — Gemini advanced config (shown only if Google provider is selected)
+    config = st.session_state.project_state.config
+    if config.get("default_provider") == "google":
+        with st.expander("Phase 5 — Configuration Gemini Avancée", expanded=False):
+            _render_gemini_advanced_config()
+
     # Navigation inter-étapes
     st.markdown("---")
     col_back, col_next = st.columns(2)
@@ -684,3 +690,169 @@ def _render_config_export_import():
                 st.error("Le fichier ne contient pas une configuration valide.")
         except Exception as e:
             st.error(f"Erreur de lecture du fichier : {e}")
+
+
+def _render_gemini_advanced_config():
+    """Configuration avancée pour Google Gemini 3.1 — Context Caching et Thinking Level.
+
+    Affiché uniquement lorsque le fournisseur actif est Google Gemini.
+    """
+    config = st.session_state.project_state.config
+    gemini_cfg = config.get("gemini", {})
+    current_model = config.get("model", "gemini-3-flash-preview")
+
+    st.markdown("### Paramètres de génération Gemini")
+
+    # ── Context Caching ──────────────────────────────────────────────────────
+    st.markdown("#### Context Caching")
+
+    caching_supported = "3.1-pro" in current_model
+    if not caching_supported:
+        st.info(
+            "ℹ️ Context caching disponible uniquement avec **gemini-3.1-pro-preview**. "
+            f"Modèle actuel : `{current_model}`."
+        )
+
+    caching_enabled = st.checkbox(
+        "Activer le Context Caching",
+        value=gemini_cfg.get("caching_enabled", False),
+        disabled=not caching_supported,
+        help=(
+            "Stocke le corpus une seule fois côté Google Cloud. "
+            "Réduit les coûts d'environ 85% sur les tokens d'entrée. "
+            "Nécessite un corpus d'au minimum 2 048 tokens."
+        ),
+    )
+
+    # Bloc d'estimation des coûts (si caching activé et corpus indexé)
+    if caching_enabled and caching_supported:
+        state = st.session_state.project_state
+        corpus_tokens = 0
+        num_sections = 0
+        if state.corpus:
+            corpus_tokens = getattr(state.corpus, "total_tokens", 0) or 0
+        if state.plan and state.plan.sections:
+            num_sections = len(state.plan.sections)
+
+        if corpus_tokens > 0 and num_sections > 0:
+            try:
+                from src.core.gemini_cache_manager import GeminiCacheManager
+                mgr = GeminiCacheManager()
+                ttl_hours = gemini_cfg.get("cache_ttl_seconds", 7200) / 3600
+                estimate = mgr.estimate_cache_cost(
+                    corpus_tokens=corpus_tokens,
+                    num_sections=num_sections,
+                    ttl_hours=ttl_hours,
+                    model=current_model,
+                )
+
+                st.markdown("**Estimation des coûts (Context Caching)**")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Sans cache", f"~${estimate['cost_without_cache']:.2f}")
+                with col2:
+                    st.metric(
+                        "Avec cache",
+                        f"~${estimate['cost_with_cache']:.2f}",
+                        delta=f"-${estimate['savings_usd']:.2f}",
+                    )
+                with col3:
+                    st.metric("Économie", f"{estimate['savings_percent']:.0f}%")
+
+                st.caption(
+                    f"Corpus : {corpus_tokens:,} tokens | "
+                    f"Sections : {num_sections} | "
+                    f"Stockage : ~${estimate['storage_cost']:.3f} | "
+                    f"Break-even : {estimate['break_even_sections']} section(s)"
+                )
+
+                if corpus_tokens >= 2048 and num_sections >= estimate["break_even_sections"]:
+                    st.success(
+                        f"✅ Context Caching est rentable pour ce projet "
+                        f"(break-even à partir de {estimate['break_even_sections']} section(s))."
+                    )
+                elif corpus_tokens < 2048:
+                    st.warning(
+                        "⚠️ Corpus trop petit pour le context caching (< 2 048 tokens). "
+                        "Mode standard activé automatiquement."
+                    )
+
+                # Alerte long-context
+                if corpus_tokens > 200_000:
+                    st.error(
+                        "⚠️ Votre corpus dépasse 200 000 tokens. Gemini applique un "
+                        "tarif long-context ($4/1M input, $18/1M output). "
+                        f"Coût estimé sans cache : ~${estimate['cost_without_cache']:.2f}. "
+                        "Envisagez de réduire le corpus ou d'utiliser un autre provider."
+                    )
+
+            except Exception:
+                st.info("Indexez votre corpus pour voir l'estimation des coûts.")
+        else:
+            st.info("Indexez votre corpus et configurez le plan pour voir l'estimation des coûts.")
+
+    # TTL du cache
+    if caching_enabled and caching_supported:
+        ttl_minutes = st.slider(
+            "TTL du cache (minutes)",
+            min_value=5,
+            max_value=1440,
+            value=int(gemini_cfg.get("cache_ttl_seconds", 7200) / 60),
+            step=5,
+            help="Durée de vie du cache. Recommandé : 120 min (2h) pour couvrir une session.",
+        )
+        gemini_cfg["cache_ttl_seconds"] = ttl_minutes * 60
+    else:
+        ttl_minutes = int(gemini_cfg.get("cache_ttl_seconds", 7200) / 60)
+
+    # ── Thinking Level ───────────────────────────────────────────────────────
+    st.markdown("#### Thinking Level")
+    st.caption(
+        "Contrôle la profondeur de raisonnement interne de Gemini 3.1 Pro avant la réponse. "
+        "Disponible uniquement avec gemini-3.1-pro-preview."
+    )
+
+    thinking_supported = "3.1" in current_model
+    if not thinking_supported:
+        st.info(
+            f"ℹ️ Thinking Level disponible uniquement avec les modèles Gemini 3.1. "
+            f"Modèle actuel : `{current_model}`."
+        )
+
+    thinking_mode = st.radio(
+        "Mode Thinking Level",
+        options=["Auto (recommandé)", "Manuel"],
+        index=0 if gemini_cfg.get("thinking_level_mode", "auto") == "auto" else 1,
+        disabled=not thinking_supported,
+        help=(
+            "Auto : l'orchestrateur choisit le niveau optimal selon le type de tâche. "
+            "Manuel : vous choisissez un niveau fixe pour toutes les tâches."
+        ),
+    )
+
+    if thinking_mode == "Manuel" and thinking_supported:
+        level_options = ["minimal", "low", "medium", "high"]
+        current_level = gemini_cfg.get("manual_thinking_level", "medium")
+        manual_level = st.select_slider(
+            "Niveau de réflexion",
+            options=level_options,
+            value=current_level if current_level in level_options else "medium",
+            help="minimal ~2s | low ~5s | medium ~15s | high ~36s",
+        )
+        if manual_level == "high":
+            st.warning(
+                "⚠️ Le niveau 'high' est plus lent (~36s par section) mais offre "
+                "une qualité maximale. Recommandé pour la génération de sections critiques."
+            )
+        gemini_cfg["manual_thinking_level"] = manual_level
+        gemini_cfg["thinking_level_mode"] = "manual"
+    else:
+        gemini_cfg["thinking_level_mode"] = "auto"
+
+    # Sauvegarder
+    if st.button("Sauvegarder la configuration Gemini"):
+        gemini_cfg["caching_enabled"] = caching_enabled
+        config["gemini"] = gemini_cfg
+        st.session_state.project_state.config = config
+        _save_state(st.session_state.project_state)
+        st.success("Configuration Gemini sauvegardée.")

@@ -177,7 +177,37 @@ def render():
 
     st.divider()
 
-    # ── Section D : Performance ──
+    # ── Section D : Cache Gemini (Phase 5) ──
+    cache_stats = cost_report.get("gemini_cache_stats", {})
+    if not cache_stats:
+        cache_stats = getattr(state, "cache_stats", {})
+
+    if cache_stats and cache_stats.get("cache_name"):
+        st.header("Cache Gemini")
+        cache_col1, cache_col2, cache_col3 = st.columns(3)
+
+        with cache_col1:
+            st.metric("Tokens cachés", f"{cache_stats.get('tokens_cached', 0):,}")
+        with cache_col2:
+            hits = cache_stats.get("cache_hits", 0)
+            misses = cache_stats.get("cache_misses", 0)
+            st.metric("Hits / Misses", f"{hits} / {misses}")
+        with cache_col3:
+            savings = cache_stats.get("savings_vs_no_cache_usd", 0.0)
+            storage = cache_stats.get("storage_cost_usd", 0.0)
+            st.metric(
+                "Économies",
+                f"~${savings:.3f}",
+                delta=f"Stockage: ${storage:.4f}",
+            )
+
+        cache_name = cache_stats.get("cache_name", "")
+        if cache_name:
+            st.caption(f"Cache actif : `{cache_name}`")
+
+        st.divider()
+
+    # ── Section E : Performance ──
     st.header("Performance")
     cost_tracker = st.session_state.get("cost_tracker")
     if cost_tracker and hasattr(cost_tracker, "report"):

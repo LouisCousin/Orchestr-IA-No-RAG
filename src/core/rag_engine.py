@@ -18,6 +18,7 @@ Phase 5 (Sécurité mémoire) : segmentation RAM par lots de MAX_RAM_BATCH_SIZE
 """
 
 import logging
+import os
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -186,31 +187,39 @@ class RAGEngine:
             return []
 
     def _get_embeddings_gemini(self, texts: list[str]) -> list[list[float]]:
-        """Calcule les embeddings via l'API Google Gemini par lots."""
+        """Calcule les embeddings via l'API Google Gemini par lots (nouveau SDK google-genai)."""
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types as genai_types
+
+            api_key = os.environ.get("GOOGLE_API_KEY", "")
+            client = genai.Client(api_key=api_key)
+
+            # Modèle d'embedding cible : text-embedding-004 (768 dimensions, multilingue)
+            embedding_model = "models/text-embedding-004"
 
             all_embeddings: list[list[float]] = []
             batch_size = self._embedding_batch_size
 
             for start in range(0, len(texts), batch_size):
                 batch = texts[start:start + batch_size]
-                result = genai.embed_content(
-                    model=f"models/{self._embedding_model}",
-                    content=batch,
-                    task_type="retrieval_document",
+                result = client.models.embed_content(
+                    model=embedding_model,
+                    contents=batch,
+                    config=genai_types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT"
+                    ),
                 )
-                if isinstance(result["embedding"], list) and result["embedding"]:
-                    if isinstance(result["embedding"][0], list):
-                        all_embeddings.extend(result["embedding"])
-                    else:
-                        all_embeddings.append(result["embedding"])
+                embeddings = [e.values for e in result.embeddings]
+                all_embeddings.extend(embeddings)
 
-            logger.info(f"Embeddings Gemini : {len(all_embeddings)} vecteurs via {self._embedding_model}")
+            logger.info(
+                f"Embeddings Gemini (text-embedding-004) : {len(all_embeddings)} vecteurs"
+            )
             return all_embeddings
 
         except ImportError:
-            logger.warning("google-generativeai non installé, fallback embeddings ChromaDB")
+            logger.warning("google-genai non installé, fallback embeddings local")
             return []
         except Exception as e:
             logger.warning(f"Erreur embeddings Gemini : {e}, fallback ChromaDB")
