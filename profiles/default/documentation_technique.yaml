@@ -1,0 +1,43 @@
+name: Documentation Technique
+description: >
+  Profil optimisé pour la génération de documentation technique à partir
+  d'un dépôt de code source. Recommandé avec l'acquisition GitHub (Phase 6).
+target_pages: 30
+tone: technique et factuel
+
+generation:
+  temperature: 0.3
+  max_tokens: 4096
+  number_of_passes: 1
+
+checkpoints:
+  after_plan_validation: true
+  after_corpus_acquisition: false
+  after_extraction: false
+  after_prompt_generation: false
+  after_generation: false
+  final_review: true
+
+corpus:
+  github_acquisition:
+    include_patterns_preset: code_and_docs
+    include_repo_structure: true
+    include_readme_first: true
+
+styling:
+  primary_color: '#1A2E44'
+  secondary_color: '#2D6A9F'
+  font_title: Calibri
+  font_body: Calibri
+  font_size_title: 16
+  font_size_body: 11
+
+persistent_instructions: >
+  Vous documentez un projet logiciel. Utilisez la terminologie exacte
+  du code source. Référencez les fichiers par leur chemin relatif.
+  Produisez une documentation structurée, précise et orientée développeurs.
+  Incluez des exemples de code issus du corpus lorsque pertinent.
+
+recommended_models:
+  primary: gemini-3.1-pro-preview
+  fallback: gpt-4.1

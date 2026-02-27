@@ -57,6 +57,12 @@ class ProjectState:
     # Phase 5 fields
     cache_id: Optional[str] = None                          # Nom du cache Gemini (ex: "cachedContents/abc123")
     cache_stats: dict = field(default_factory=dict)         # Statistiques du cache Gemini
+    # Phase 6 — GitHub
+    github_repo_url: Optional[str] = None                  # URL du dépôt acquis
+    github_branch: Optional[str] = None                    # Branche utilisée
+    github_file_count: int = 0                              # Nombre de fichiers inclus
+    github_token_count: int = 0                             # Tokens estimés du corpus GitHub
+    github_acquired_at: Optional[str] = None               # Timestamp ISO d'acquisition
     created_at: str = ""
     updated_at: str = ""
 
@@ -96,6 +102,11 @@ class ProjectState:
             "feedback_history": self.feedback_history,
             "cache_id": self.cache_id,
             "cache_stats": self.cache_stats,
+            "github_repo_url": self.github_repo_url,
+            "github_branch": self.github_branch,
+            "github_file_count": self.github_file_count,
+            "github_token_count": self.github_token_count,
+            "github_acquired_at": self.github_acquired_at,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
         }
@@ -122,6 +133,11 @@ class ProjectState:
             feedback_history=data.get("feedback_history", []),
             cache_id=data.get("cache_id"),
             cache_stats=data.get("cache_stats", {}),
+            github_repo_url=data.get("github_repo_url"),
+            github_branch=data.get("github_branch"),
+            github_file_count=data.get("github_file_count", 0),
+            github_token_count=data.get("github_token_count", 0),
+            github_acquired_at=data.get("github_acquired_at"),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
