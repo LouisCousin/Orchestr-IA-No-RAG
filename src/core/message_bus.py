@@ -98,6 +98,10 @@ class MessageBus:
             )
             return None
 
+    def store_alert_sync(self, message: AgentMessage) -> None:
+        """Stocke un message d'alerte de manière synchrone (hors event loop)."""
+        self._history.append(message)
+
     def get_alerts(self) -> list[AgentMessage]:
         """Retourne toutes les alertes émises."""
         return [m for m in self._history if m.type == "alert"]

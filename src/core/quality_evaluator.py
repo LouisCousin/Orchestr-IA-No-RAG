@@ -4,6 +4,7 @@ Phase 3 : évalue chaque section sur 6 critères et produit un rapport
 structuré avec score global pondéré.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -266,7 +267,6 @@ class QualityEvaluator:
     @staticmethod
     def _parse_ai_scores(response_text: str) -> dict:
         """Parse la réponse JSON de l'évaluation IA."""
-        import json
         from src.utils.string_utils import clean_json_string
 
         # Nettoyer les balises Markdown avant parsing

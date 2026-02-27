@@ -141,6 +141,7 @@ class MultiAgentOrchestrator:
         self.agents: dict[str, BaseAgent] = {}
         self._dag: dict = {}
         self._sem = asyncio.Semaphore(agent_config.max_parallel_writers)
+        self._sem_verif = asyncio.Semaphore(agent_config.max_parallel_verifiers)
         self._result = GenerationResult()
         self._cost_tracker = CostTracker()
         self._done = False
@@ -472,8 +473,7 @@ class MultiAgentOrchestrator:
         self, section_id: str, task: dict
     ) -> tuple[str, AgentResult]:
         """Exécute un Vérificateur avec sémaphore."""
-        sem = asyncio.Semaphore(self.config.max_parallel_verifiers)
-        async with sem:
+        async with self._sem_verif:
             agent = self.agents.get("verificateur")
             result = await agent.run(task)
             result.section_id = section_id
