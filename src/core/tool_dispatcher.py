@@ -208,14 +208,11 @@ class ToolDispatcher:
         )
         # Synchronous publish — run in event loop if available
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(self._bus.publish(message))
-            else:
-                loop.run_until_complete(self._bus.publish(message))
+            loop = asyncio.get_running_loop()
+            asyncio.ensure_future(self._bus.publish(message))
         except RuntimeError:
-            # No event loop — store directly in history
-            self._bus._history.append(message)
+            # No running event loop — store via synchronous helper
+            self._bus.store_alert_sync(message)
 
         return "Alerte transmise à l'utilisateur."
 

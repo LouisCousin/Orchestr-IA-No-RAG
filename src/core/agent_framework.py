@@ -168,7 +168,7 @@ class BaseAgent:
                     self._execute(task),
                     timeout=self.timeout_s,
                 )
-                result.duration_ms = int((time.time() - start_time) * 1000)
+                result.duration_ms = max(1, int((time.time() - start_time) * 1000))
                 self._update_state("done", progress=1.0)
                 self.state.results_count += 1
                 return result
@@ -204,10 +204,9 @@ class BaseAgent:
         self,
         prompt: str,
         system_prompt: str,
-        tools: Optional[list] = None,
     ) -> AIResponse:
         """Appelle le provider via run_in_executor (le provider est synchrone)."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
             lambda: self.provider.generate(
