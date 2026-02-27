@@ -229,7 +229,7 @@ class CostTracker:
         # Mettre à jour les stats de cache
         stats = self._report.gemini_cache_stats
         stats["storage_cost_usd"] = stats.get("storage_cost_usd", 0.0) + cost
-        stats["tokens_cached"] = cached_tokens
+        stats["tokens_cached"] = stats.get("tokens_cached", 0) + cached_tokens
 
         return cost
 

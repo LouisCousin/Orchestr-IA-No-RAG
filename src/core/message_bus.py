@@ -7,6 +7,7 @@ Phase 7 : permet la notification de complétion, la transmission d'alertes,
 
 import asyncio
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -23,6 +24,7 @@ class MessageBus:
         self._history: list[AgentMessage] = []
         self._sections: dict[str, str] = {}  # section_id -> contenu
         self._lock: asyncio.Lock = asyncio.Lock()
+        self._sync_lock: threading.Lock = threading.Lock()
         self._section_events: dict[str, asyncio.Event] = {}
 
     async def publish(self, message: AgentMessage) -> None:
@@ -72,7 +74,8 @@ class MessageBus:
 
     def get_history(self) -> list[AgentMessage]:
         """Retourne l'historique complet des messages."""
-        return list(self._history)
+        with self._sync_lock:
+            return list(self._history)
 
     async def wait_for(
         self,
@@ -100,11 +103,13 @@ class MessageBus:
 
     def store_alert_sync(self, message: AgentMessage) -> None:
         """Stocke un message d'alerte de manière synchrone (hors event loop)."""
-        self._history.append(message)
+        with self._sync_lock:
+            self._history.append(message)
 
     def get_alerts(self) -> list[AgentMessage]:
         """Retourne toutes les alertes émises."""
-        return [m for m in self._history if m.type == "alert"]
+        with self._sync_lock:
+            return [m for m in self._history if m.type == "alert"]
 
     def reset(self) -> None:
         """Réinitialise le bus (pour les tests)."""

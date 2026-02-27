@@ -32,7 +32,7 @@ class TestAnthropicProviderInit:
         models = provider.list_models()
         assert "claude-opus-4-6" in models
         assert "claude-sonnet-4-5-20250514" in models
-        assert "claude-haiku-35-20241022" in models
+        assert "claude-3-5-haiku-20241022" in models
 
     def test_list_models_returns_copy(self):
         provider = AnthropicProvider(api_key="test")

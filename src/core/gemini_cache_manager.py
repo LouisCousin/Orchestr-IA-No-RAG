@@ -299,9 +299,12 @@ class GeminiCacheManager:
             now = datetime.now(timezone.utc)
             if hasattr(expire_time, "timestamp"):
                 remaining = expire_time.timestamp() - now.timestamp()
+            elif hasattr(expire_time, "seconds"):
+                # Proto Timestamp: .seconds is Unix epoch seconds, .nanos is sub-second
+                expire_unix = float(expire_time.seconds) + float(getattr(expire_time, "nanos", 0)) / 1e9
+                remaining = expire_unix - now.timestamp()
             else:
-                # Cas où expire_time est un proto Timestamp
-                remaining = float(expire_time.seconds) - now.timestamp()
+                return 0.0
             return max(0.0, remaining)
         except Exception:
             return 0.0
