@@ -173,8 +173,15 @@ class EvaluatorAgent(BaseAgent):
                 "completude": 3.5,
                 "respect_plan": 3.5,
             }
+        if "scores_par_section" not in data:
+            # Fallback : attribuer le score global à chaque section
+            data["scores_par_section"] = {sid: data["score_global"] for sid in sections}
         if "sections_a_corriger" not in data:
-            data["sections_a_corriger"] = []
+            # Déduire les sections à corriger depuis scores_par_section
+            data["sections_a_corriger"] = [
+                sid for sid, score in data["scores_par_section"].items()
+                if score < section_threshold
+            ]
         if "recommandation" not in data:
             data["recommandation"] = (
                 "exporter" if data["score_global"] >= quality_threshold else "corriger"

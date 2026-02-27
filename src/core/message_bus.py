@@ -77,11 +77,27 @@ class MessageBus:
     async def wait_for(
         self,
         section_id: str,
+        agent: str = "",
         timeout_s: int = 300,
-    ) -> Optional[str]:
-        """Attend la publication d'une section spécifique avec timeout."""
+    ) -> Optional[AgentMessage]:
+        """Attend la publication d'un résultat spécifique avec timeout.
+
+        Args:
+            section_id: Identifiant de la section attendue.
+            agent: Nom de l'agent émetteur attendu (optionnel, non filtré).
+            timeout_s: Timeout en secondes.
+
+        Returns:
+            AgentMessage contenant le résultat, ou None si timeout.
+        """
         if section_id in self._sections:
-            return self._sections[section_id]
+            return AgentMessage(
+                sender=agent or "bus",
+                recipient="*",
+                type="result",
+                payload={"content": self._sections[section_id]},
+                section_id=section_id,
+            )
 
         if section_id not in self._section_events:
             self._section_events[section_id] = asyncio.Event()
@@ -91,7 +107,14 @@ class MessageBus:
                 self._section_events[section_id].wait(),
                 timeout=timeout_s,
             )
-            return self._sections.get(section_id)
+            content = self._sections.get(section_id)
+            return AgentMessage(
+                sender=agent or "bus",
+                recipient="*",
+                type="result",
+                payload={"content": content},
+                section_id=section_id,
+            )
         except asyncio.TimeoutError:
             logger.warning(
                 f"MessageBus: timeout en attendant la section {section_id}"

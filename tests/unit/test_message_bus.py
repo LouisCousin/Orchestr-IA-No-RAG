@@ -98,8 +98,11 @@ class TestMessageBus:
                 await bus.store_section("s03", "Contenu différé")
 
             asyncio.create_task(store_later())
-            result = await bus.wait_for("s03", timeout_s=5)
-            assert result == "Contenu différé"
+            result = await bus.wait_for("s03", agent="redacteur", timeout_s=5)
+            assert result is not None
+            assert isinstance(result, AgentMessage)
+            assert result.section_id == "s03"
+            assert result.payload["content"] == "Contenu différé"
 
         run(_test())
 
@@ -116,7 +119,9 @@ class TestMessageBus:
             bus = MessageBus()
             await bus.store_section("s04", "Déjà là")
             result = await bus.wait_for("s04", timeout_s=1)
-            assert result == "Déjà là"
+            assert result is not None
+            assert isinstance(result, AgentMessage)
+            assert result.payload["content"] == "Déjà là"
 
         run(_test())
 

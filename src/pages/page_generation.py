@@ -603,7 +603,7 @@ def _run_multi_agent_generation(state, provider):
 
     agent_config = AgentConfig.from_config(config)
 
-    # Placeholder pour le dashboard temps réel
+    # Dashboard temps réel
     dashboard_placeholder = st.empty()
     status_text = st.empty()
     progress_bar = st.progress(0, text="Initialisation du pipeline multi-agents...")
@@ -611,6 +611,14 @@ def _run_multi_agent_generation(state, provider):
     def progress_callback(done, total, phase):
         if total > 0:
             progress_bar.progress(done / total, text=f"[{phase}] {done}/{total} sections")
+        # Mise à jour du dashboard temps réel avec l'état des agents
+        try:
+            states = orchestrator.get_agent_states()
+            metrics = orchestrator.get_current_metrics()
+            with dashboard_placeholder.container():
+                _render_live_agent_dashboard(states, metrics, phase)
+        except Exception:
+            pass
 
     orchestrator = MultiAgentOrchestrator(
         project_state=state,
@@ -725,6 +733,33 @@ def _render_multi_agent_report(state):
                 problems = report.get("problemes", [])
                 icon = {"ok": "OK", "alerte": "!", "erreur": "X"}.get(verdict, "?")
                 st.text(f"  [{icon}] {sid} — {len(problems)} problème(s)")
+
+
+def _render_live_agent_dashboard(states, metrics, phase):
+    """Affiche le tableau de bord temps réel des agents pendant l'exécution."""
+    st.markdown("#### Agents en cours")
+
+    # Métriques globales
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Phase", phase.capitalize())
+    col2.metric("Sections", f"{metrics.get('sections_generated', 0)}/{metrics.get('total_sections', 0)}")
+    col3.metric("Vérifiées", metrics.get("sections_verified", 0))
+    elapsed_s = metrics.get("elapsed_ms", 0) / 1000
+    col4.metric("Temps", f"{elapsed_s:.1f}s")
+
+    # État de chaque agent
+    status_icons = {
+        "idle": "[ ]",
+        "running": "[>]",
+        "done": "[v]",
+        "error": "[x]",
+    }
+    for agent_state in states:
+        icon = status_icons.get(agent_state.status, "[?]")
+        progress = agent_state.progress
+        detail = agent_state.current_task or ""
+        bar_text = f"{icon} {agent_state.agent_name}: {detail}"
+        st.progress(min(max(progress, 0.0), 1.0), text=bar_text)
 
 
 def _render_deferred_sections(state):
