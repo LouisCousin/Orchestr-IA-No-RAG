@@ -224,3 +224,75 @@ gemini:
     feedback_analysis: "low"
     metadata_extraction: "minimal"
   default_thinking_level: "medium"
+
+# ═══════════════════════════════════════════
+# Phase 6 — Acquisition GitHub (API REST, No-RAG)
+# ═══════════════════════════════════════════
+
+github_acquisition:
+  enabled: true
+
+  # Limites de sélection
+  max_file_size_kb: 500            # Ignorer les fichiers > 500 Ko
+  max_total_files: 500             # Limite de fichiers sélectionnables
+  max_total_tokens: 500000         # Budget tokens pour le corpus GitHub
+
+  # Assemblage du corpus
+  include_repo_structure: true     # Inclure l'arbre textuel du dépôt
+  include_repo_metadata: true      # Inclure description, langages, topics
+  include_readme_first: true       # Placer le README en tête de corpus
+
+  # Patterns de filtrage (fnmatch)
+  include_patterns:
+    # Code source
+    - '*.py'
+    - '*.js'
+    - '*.ts'
+    - '*.tsx'
+    - '*.jsx'
+    - '*.java'
+    - '*.go'
+    - '*.rs'
+    - '*.c'
+    - '*.cpp'
+    - '*.h'
+    - '*.rb'
+    - '*.php'
+    - '*.swift'
+    - '*.kt'
+    # Documentation
+    - '*.md'
+    - '*.rst'
+    - '*.txt'
+    # Configuration
+    - '*.yaml'
+    - '*.yml'
+    - '*.json'
+    - '*.toml'
+    - 'Dockerfile'
+    - 'Makefile'
+    - '*.sh'
+
+  exclude_patterns:
+    - '.git/**'
+    - 'node_modules/**'
+    - 'vendor/**'
+    - '__pycache__/**'
+    - '*.pyc'
+    - '*.min.js'
+    - '*.min.css'
+    - '*.lock'
+    - '*.sum'
+    - 'dist/**'
+    - 'build/**'
+    - '.next/**'
+    - '*.map'
+    - '*.wasm'
+    - '*.bin'
+    - '*.png'
+    - '*.jpg'
+    - '*.gif'
+    - '*.svg'
+    - '*.ico'
+    - '*.woff*'
+    - '*.ttf'

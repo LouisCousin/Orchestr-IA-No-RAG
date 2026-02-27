@@ -1,6 +1,8 @@
 """Page d'acquisition du corpus documentaire."""
 
+import re
 import streamlit as st
+from datetime import datetime
 from pathlib import Path
 
 from src.utils.config import ROOT_DIR
@@ -15,14 +17,26 @@ from src.utils.content_validator import is_antibot_page
 
 PROJECTS_DIR = ROOT_DIR / "projects"
 
+# Budget tokens par modèle (réserve output déduite)
+_TOKEN_BUDGETS = {
+    "gemini": 500_000,
+    "openai": 800_000,
+    "anthropic": 150_000,
+    "default": 400_000,
+}
+
+_GITHUB_URL_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/\s]+)"
+)
+
 
 def render():
     st.title("Acquisition du corpus")
     st.info(
         "**Étape 2/5** — Constituez votre corpus de sources. Uploadez des fichiers "
-        "(PDF, DOCX, etc.) ou saisissez des URLs. Ces documents serviront de base "
-        "factuelle pour la génération (RAG). Plus le corpus est riche et pertinent, "
-        "meilleur sera le document produit."
+        "(PDF, DOCX, etc.), saisissez des URLs, ou importez un dépôt GitHub. "
+        "Ces documents serviront de base factuelle pour la génération. "
+        "Plus le corpus est riche et pertinent, meilleur sera le document produit."
     )
     st.markdown("---")
 
@@ -34,14 +48,17 @@ def render():
     corpus_dir = PROJECTS_DIR / project_id / "corpus"
     ensure_dir(corpus_dir)
 
-    # Sources d'acquisition (côte à côte)
-    col_upload, col_urls = st.columns(2)
+    # Trois onglets d'acquisition
+    tab_files, tab_urls, tab_github = st.tabs(["Fichiers", "URLs", "GitHub"])
 
-    with col_upload:
+    with tab_files:
         _render_file_upload(corpus_dir)
 
-    with col_urls:
+    with tab_urls:
         _render_url_acquisition(corpus_dir)
+
+    with tab_github:
+        _render_github_acquisition()
 
     # Récapitulatif du corpus
     st.markdown("---")
@@ -148,6 +165,254 @@ def _render_url_acquisition(corpus_dir: Path):
         acquirer.close()
         _display_report(report)
         st.rerun()
+
+
+def _render_github_acquisition():
+    """Onglet GitHub — acquisition via API REST, sans git clone."""
+    st.subheader("Dépôt GitHub")
+
+    # ── Étape 1 : saisie ──
+    repo_url = st.text_input(
+        "URL du dépôt",
+        placeholder="https://github.com/owner/repo",
+        key="gh_repo_url",
+    )
+    branch = st.text_input("Branche", value="main", key="gh_branch")
+
+    st.markdown("**Types de fichiers à inclure :**")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        inc_code = st.checkbox("Code source (*.py, *.js, *.ts, *.go, *.rs, ...)", value=True, key="gh_inc_code")
+        inc_doc = st.checkbox("Documentation (*.md, *.rst, *.txt, README)", value=True, key="gh_inc_doc")
+    with col_b:
+        inc_config = st.checkbox("Configuration (*.yaml, *.json, Dockerfile, *.sh)", value=False, key="gh_inc_config")
+        inc_tests = st.checkbox("Tests (test_*, *_test.*, *spec.*)", value=False, key="gh_inc_tests")
+
+    max_file_size_kb = st.number_input("Taille max par fichier (Ko)", min_value=10, max_value=5000, value=500, step=50, key="gh_max_size")
+
+    if not st.button("Analyser le dépôt", type="primary", key="gh_analyze"):
+        return
+
+    # Validation de l'URL
+    match = _GITHUB_URL_RE.match(repo_url.strip()) if repo_url else None
+    if not match:
+        st.error("URL GitHub invalide. Format attendu : https://github.com/owner/repo")
+        return
+
+    owner = match.group("owner")
+    repo = match.group("repo").rstrip("/")
+
+    # Construction des patterns
+    include_patterns: list[str] = []
+    if inc_code:
+        include_patterns += [
+            "*.py", "*.js", "*.ts", "*.tsx", "*.jsx",
+            "*.java", "*.go", "*.rs", "*.c", "*.cpp", "*.h",
+            "*.rb", "*.php", "*.swift", "*.kt",
+        ]
+    if inc_doc:
+        include_patterns += ["*.md", "*.rst", "*.txt"]
+    if inc_config:
+        include_patterns += ["*.yaml", "*.yml", "*.json", "*.toml", "Dockerfile", "Makefile", "*.sh"]
+    if inc_tests:
+        include_patterns += ["test_*", "*_test.*", "*spec.*"]
+
+    exclude_patterns: list[str] = [
+        ".git/**", "node_modules/**", "vendor/**", "__pycache__/**",
+        "*.pyc", "*.min.js", "*.min.css", "*.lock", "*.sum",
+        "dist/**", "build/**", ".next/**",
+        "*.map", "*.wasm", "*.bin",
+        "*.png", "*.jpg", "*.gif", "*.svg", "*.ico", "*.woff*", "*.ttf",
+    ]
+
+    # ── Analyse ──
+    try:
+        from src.core.github_acquirer import GitHubAcquirer, GitHubAuthError, GitHubBranchError, GitHubNotFoundError
+    except ImportError as exc:
+        st.error(f"Module github_acquirer introuvable : {exc}")
+        return
+
+    acquirer = GitHubAcquirer()
+
+    with st.spinner(f"Analyse de {owner}/{repo}@{branch}..."):
+        try:
+            tree = acquirer.fetch_repo_tree(owner, repo, branch)
+        except GitHubAuthError as exc:
+            st.error(str(exc))
+            return
+        except GitHubBranchError as exc:
+            st.error(str(exc))
+            if exc.available_branches:
+                st.info(f"Branches disponibles : {', '.join(exc.available_branches)}")
+            return
+        except GitHubNotFoundError as exc:
+            st.error(str(exc))
+            return
+        except Exception as exc:
+            st.error(f"Erreur lors de l'analyse : {exc}")
+            return
+
+        filtered = acquirer.filter_files(tree, include_patterns, exclude_patterns, int(max_file_size_kb))
+
+    # Métadonnées
+    try:
+        meta = acquirer.fetch_repo_metadata(owner, repo)
+    except Exception:
+        meta = {"full_name": f"{owner}/{repo}", "description": "", "language": "", "languages": {}}
+
+    lang_str = ", ".join(
+        f"{lang} {pct}%" for lang, pct in list(meta.get("languages", {}).items())[:3]
+    ) or meta.get("language", "N/A")
+
+    # ── Aperçu ──
+    st.markdown("#### Aperçu du dépôt")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Fichiers trouvés", len(tree))
+    col2.metric("Après filtrage", len(filtered))
+    col3.metric("Langages", lang_str[:30])
+
+    if meta.get("description"):
+        st.caption(meta["description"])
+
+    # Estimation tokens
+    config = st.session_state.project_state.config if st.session_state.get("project_state") else {}
+    provider = config.get("default_provider", "default")
+    token_budget = _TOKEN_BUDGETS.get(provider, _TOKEN_BUDGETS["default"])
+    estimate = acquirer.estimate_tokens(filtered, token_budget)
+    est_tokens = estimate["estimated_tokens"]
+    budget_pct = estimate["budget_pct"]
+
+    st.markdown(f"**Estimation corpus :** ~{est_tokens:,} tokens sur {token_budget:,} budget ({budget_pct}%)")
+
+    # Jauge colorée
+    if budget_pct < 60:
+        bar_color = "normal"
+    elif budget_pct < 85:
+        bar_color = "normal"   # Streamlit ne supporte pas la couleur custom sur progress, on utilise le texte
+    else:
+        bar_color = "normal"
+
+    st.progress(min(budget_pct / 100, 1.0))
+
+    if budget_pct >= 85:
+        st.warning(
+            f"Corpus trop volumineux ({budget_pct:.0f}% du budget). "
+            "Désactivez des catégories ou réduisez la taille max par fichier."
+        )
+    elif budget_pct >= 60:
+        st.warning(f"Corpus important ({budget_pct:.0f}% du budget). Envisagez de réduire la sélection.")
+    else:
+        st.success(f"Corpus optimal ({budget_pct:.0f}% du budget).")
+
+    # ── Sélection fichier par fichier ──
+    st.markdown(f"**Fichiers sélectionnés : {len(filtered)}/{len(tree)}**")
+
+    # Garder la sélection dans la session
+    if "gh_file_selection" not in st.session_state or st.session_state.get("_gh_last_repo") != f"{owner}/{repo}@{branch}":
+        st.session_state["gh_file_selection"] = {f["path"]: True for f in filtered}
+        st.session_state["_gh_last_repo"] = f"{owner}/{repo}@{branch}"
+        st.session_state["_gh_filtered"] = filtered
+
+    selection = st.session_state["gh_file_selection"]
+
+    with st.expander("Sélectionner les fichiers individuellement", expanded=False):
+        updated = False
+        for f in filtered[:200]:  # Limite UI à 200 entrées
+            path = f["path"]
+            ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+            size_kb = round(f.get("size", 0) / 1024, 1)
+            checked = st.checkbox(
+                f"{path}  ({size_kb} Ko)",
+                value=selection.get(path, True),
+                key=f"gh_sel_{path}",
+            )
+            if checked != selection.get(path):
+                selection[path] = checked
+                updated = True
+        if len(filtered) > 200:
+            st.caption(f"Affichage limité aux 200 premiers fichiers sur {len(filtered)}.")
+
+    selected_files = [f for f in filtered if selection.get(f["path"], True)]
+    reest = acquirer.estimate_tokens(selected_files, token_budget)
+    st.caption(
+        f"Sélection active : {len(selected_files)} fichiers — "
+        f"~{reest['estimated_tokens']:,} tokens ({reest['budget_pct']}% du budget)"
+    )
+
+    # ── Téléchargement ──
+    over_budget = reest["budget_pct"] >= 85
+    if over_budget:
+        st.button("Télécharger et indexer", disabled=True, key="gh_download")
+        st.error("Corpus > 85% du budget. Réduisez la sélection avant de télécharger.")
+        return
+
+    if not st.button("Télécharger et indexer", type="primary", key="gh_download"):
+        return
+
+    progress_bar = st.progress(0, text="Téléchargement en cours...")
+    corpus_parts: list[str] = []
+    total = len(selected_files)
+    skipped = 0
+
+    for i, f in enumerate(selected_files):
+        content = acquirer.fetch_file_content(owner, repo, f["path"], branch)
+        if content is None:
+            skipped += 1
+        else:
+            ext = f["path"].rsplit(".", 1)[-1].lower() if "." in f["path"] else ""
+            lines = content.splitlines()
+            doc_type = "documentation" if ext in ("md", "rst", "txt") else "code"
+            lang = acquirer._ext_to_language(ext)
+            corpus_parts.append(
+                f"\n=== FICHIER : {f['path']} ===\n"
+                f"Langage : {lang} | Type : {doc_type} | Lignes : {len(lines)}\n"
+                f"{'-' * 40}\n{content}"
+            )
+        progress_bar.progress((i + 1) / total, text=f"Téléchargement ({i+1}/{total})...")
+
+    progress_bar.empty()
+
+    if not corpus_parts:
+        st.error("Aucun fichier texte récupéré. Vérifiez les filtres.")
+        return
+
+    # Assembler en-tête + corpus
+    lang_str_full = ", ".join(
+        f"{lang} {pct}%" for lang, pct in list(meta.get("languages", {}).items())[:3]
+    ) or ""
+    header = (
+        f"{'=' * 40}\n"
+        f"DÉPÔT : {owner}/{repo}\n"
+        f"Branche : {branch}" + (f" | Langages : {lang_str_full}" if lang_str_full else "") + "\n"
+        + (f"Description : {meta['description']}\n" if meta.get("description") else "")
+        + "=" * 40
+    )
+    full_corpus = header + "\n" + "\n".join(corpus_parts)
+
+    # Stocker dans l'état du projet
+    state = st.session_state.project_state
+    if state:
+        # Fusion avec corpus existant
+        existing = getattr(state, "corpus_text", None) or ""
+        state.corpus_text = (existing + "\n\n" + full_corpus).strip() if existing else full_corpus
+        state.github_repo_url = f"https://github.com/{owner}/{repo}"
+        state.github_branch = branch
+        state.github_file_count = len(selected_files) - skipped
+        state.github_token_count = reest["estimated_tokens"]
+        state.github_acquired_at = datetime.now().isoformat()
+
+        # Sauvegarder
+        project_id = st.session_state.current_project
+        if project_id:
+            save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+
+    st.success(
+        f"Corpus GitHub acquis : {len(selected_files) - skipped} fichiers "
+        + (f"({skipped} ignorés — binaires)" if skipped else "")
+        + f" | ~{reest['estimated_tokens']:,} tokens"
+    )
+    if skipped:
+        st.caption(f"{skipped} fichier(s) binaire(s) ignoré(s).")
 
 
 def _render_corpus_recap(corpus_dir: Path):
