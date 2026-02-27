@@ -370,10 +370,23 @@ class QualityEvaluator:
         markers = detect_needs_source_markers(content)
         marker_count = len(markers)
 
-        # Count inline citations (good) — pattern: (Author, Year) or (Author et al., Year)
-        citation_pattern = re.compile(r'\([A-ZÀ-Ü][a-zà-ü]+(?:\s+(?:et\s+al\.)?)?,\s*\d{4}\)')
+        # Count inline citations (good) — patterns:
+        # (Author, Year), (Author et al., Year), (Author & Author, Year),
+        # (Author and Author, Year), (Author, Author & Author, Year)
+        citation_pattern = re.compile(
+            r'\('
+            r'[A-ZÀ-Ü][a-zà-ü]+'
+            r'(?:\s+(?:et\s+al\.|&\s+[A-ZÀ-Ü][a-zà-ü]+|and\s+[A-ZÀ-Ü][a-zà-ü]+|,\s+[A-ZÀ-Ü][a-zà-ü]+(?:\s*&\s*[A-ZÀ-Ü][a-zà-ü]+)?))*'
+            r',\s*\d{4}'
+            r'\)'
+        )
         citations = citation_pattern.findall(content)
         citation_count = len(citations)
+
+        # Also count numeric bracket citations: [1], [2, 3], [1-5]
+        numeric_citation_pattern = re.compile(r'\[(\d+(?:\s*[,\-–]\s*\d+)*)\]')
+        numeric_citations = numeric_citation_pattern.findall(content)
+        citation_count += len(numeric_citations)
 
         # Also count file-name citations: selon le document xxx.pdf
         file_citation_pattern = re.compile(r'(?:selon|d\'après)\s+(?:le\s+)?document\s+\S+\.(?:pdf|docx?|txt)', re.IGNORECASE)

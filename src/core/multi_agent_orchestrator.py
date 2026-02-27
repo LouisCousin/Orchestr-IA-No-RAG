@@ -315,7 +315,12 @@ class MultiAgentOrchestrator:
         }
 
     async def _run_generation_phase(self, architecture: dict) -> dict[str, str]:
-        """Lance les Rédacteurs en respectant le DAG de dépendances."""
+        """Lance les Rédacteurs en respectant le DAG de dépendances.
+
+        Utilise asyncio.create_task pour un vrai streaming DAG : dès qu'une
+        section se termine, les sections dépendantes deviennent immédiatement
+        éligibles au lancement, sans attendre la fin du batch courant.
+        """
         sections_data = {s["id"]: s for s in architecture.get("sections", [])}
         system_prompt_global = architecture.get("system_prompt_global", "")
         corpus_text = self._get_corpus_text()
@@ -324,28 +329,21 @@ class MultiAgentOrchestrator:
         in_progress: set[str] = set()
         generated: dict[str, str] = {}
         section_summaries: dict[str, str] = {}
+        pending_tasks: dict[str, asyncio.Task] = {}  # sid -> Task
 
         while len(completed) < len(self._dag):
+            # Lancer toutes les sections prêtes non encore en cours
             ready = get_ready_sections(self._dag, completed, in_progress)
 
             if not ready and not in_progress:
-                # Toutes les sections non traitées ont des dépendances non résolues
                 remaining = set(self._dag.keys()) - completed
                 logger.warning(f"Sections bloquées : {remaining}")
                 break
 
-            if not ready:
-                # Attendre qu'une section en cours se termine
-                await asyncio.sleep(0.1)
-                continue
-
-            # Lancer les sections prêtes en parallèle (avec sémaphore)
-            tasks = []
             for sid in ready:
                 in_progress.add(sid)
                 section_info = sections_data.get(sid, {"id": sid, "title": sid})
 
-                # Collecter les résumés des sections prérequises
                 prereqs = {}
                 for dep_id in self._dag.get(sid, []):
                     if dep_id in section_summaries:
@@ -365,13 +363,37 @@ class MultiAgentOrchestrator:
                     "description": f"Rédaction {sid}",
                 }
 
-                tasks.append(self._execute_writer(sid, task_data))
+                pending_tasks[sid] = asyncio.create_task(
+                    self._execute_writer(sid, task_data)
+                )
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            if not pending_tasks:
+                await asyncio.sleep(0.1)
+                continue
 
-            for sid_result in results:
-                if isinstance(sid_result, Exception):
-                    logger.error(f"Erreur rédaction: {sid_result}")
+            # Wait for at least one task to complete
+            done, _ = await asyncio.wait(
+                pending_tasks.values(),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in done:
+                # Find the sid for this completed task
+                finished_sid = None
+                for sid, t in pending_tasks.items():
+                    if t is task:
+                        finished_sid = sid
+                        break
+                if finished_sid is None:
+                    continue
+                del pending_tasks[finished_sid]
+
+                try:
+                    sid_result = task.result()
+                except Exception as exc:
+                    logger.error(f"Erreur rédaction: {exc}")
+                    in_progress.discard(finished_sid)
+                    completed.add(finished_sid)
                     continue
 
                 sid, result = sid_result
@@ -379,9 +401,7 @@ class MultiAgentOrchestrator:
 
                 if result.success and result.content:
                     generated[sid] = result.content
-                    # Stocker dans le bus pour accès par les autres agents
                     await self.bus.store_section(sid, result.content)
-                    # Générer un résumé court
                     section_summaries[sid] = result.content[:500]
                 else:
                     logger.warning(f"Rédaction échouée pour {sid}: {result.error}")

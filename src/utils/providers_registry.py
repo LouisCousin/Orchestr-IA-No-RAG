@@ -15,7 +15,7 @@ PROVIDERS_INFO = {
         "label": "Anthropic (Claude 4.5 / Opus 4.6)",
         "env_var": "ANTHROPIC_API_KEY",
         "placeholder": "sk-ant-your-anthropic-api-key-here",
-        "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-haiku-35-20241022"],
+        "models": ["claude-opus-4-6", "claude-sonnet-4-5-20250514", "claude-3-5-haiku-20241022"],
         "default_model": "claude-sonnet-4-5-20250514",
     },
     "google": {

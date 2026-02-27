@@ -21,7 +21,7 @@ class AnthropicProvider(BaseProvider):
     MODELS = [
         "claude-opus-4-6",
         "claude-sonnet-4-5-20250514",
-        "claude-haiku-35-20241022",
+        "claude-3-5-haiku-20241022",
     ]
 
     def __init__(self, api_key: Optional[str] = None, max_retries: int = 3, base_delay: float = 2.0):
