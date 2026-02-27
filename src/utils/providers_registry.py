@@ -19,11 +19,15 @@ PROVIDERS_INFO = {
         "default_model": "claude-sonnet-4-5-20250514",
     },
     "google": {
-        "label": "Google Gemini 3",
+        "label": "Google Gemini 3.1",
         "env_var": "GOOGLE_API_KEY",
         "placeholder": "your-google-api-key-here",
-        "models": ["gemini-3.0-pro", "gemini-3.0-flash"],
-        "default_model": "gemini-3.0-flash",
+        "models": [
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-3-flash-preview",
+        ],
+        "default_model": "gemini-3-flash-preview",
     },
 }
 

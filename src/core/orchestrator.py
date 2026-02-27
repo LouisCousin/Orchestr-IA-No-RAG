@@ -54,6 +54,9 @@ class ProjectState:
     personas: dict = field(default_factory=dict)           # personas config
     citations: dict = field(default_factory=dict)          # citations resolved
     feedback_history: list = field(default_factory=list)   # feedback loop entries
+    # Phase 5 fields
+    cache_id: Optional[str] = None                          # Nom du cache Gemini (ex: "cachedContents/abc123")
+    cache_stats: dict = field(default_factory=dict)         # Statistiques du cache Gemini
     created_at: str = ""
     updated_at: str = ""
 
@@ -91,6 +94,8 @@ class ProjectState:
             "personas": self.personas,
             "citations": self.citations,
             "feedback_history": self.feedback_history,
+            "cache_id": self.cache_id,
+            "cache_stats": self.cache_stats,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
         }
@@ -115,6 +120,8 @@ class ProjectState:
             personas=data.get("personas", {}),
             citations=data.get("citations", {}),
             feedback_history=data.get("feedback_history", []),
+            cache_id=data.get("cache_id"),
+            cache_stats=data.get("cache_stats", {}),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
@@ -188,6 +195,8 @@ class Orchestrator:
         self.state: Optional[ProjectState] = None
         self._metadata_store = None  # Phase 2.5 : MetadataStore SQLite
         self._last_plan_context = None  # Phase 2.5 : dernier PlanContext pour affichage UI
+        # Phase 5 : GeminiCacheManager (lazy-initialized)
+        self._cache_manager = None
         # Phase 4 (Perf) : pipelining — évaluation post-génération en arrière-plan
         self._background_executor = ThreadPoolExecutor(max_workers=2)
         self._state_lock = threading.Lock()
@@ -345,6 +354,120 @@ class Orchestrator:
     def is_agentic(self) -> bool:
         """Vérifie si le mode agentique est activé."""
         return self.config.get("mode", "manual") == "agentic"
+
+    def _get_thinking_level(self, task_type: str) -> Optional[str]:
+        """Retourne le thinking_level adapté à la tâche (Phase 5).
+
+        Retourne None si le provider actif n'est pas GeminiProvider
+        ou si le modèle n'est pas de la famille gemini-3.1.
+
+        Args:
+            task_type: Type de tâche (ex: "section_generation", "summary", ...).
+
+        Returns:
+            Niveau de réflexion ("minimal", "low", "medium", "high") ou None.
+        """
+        from src.providers.gemini_provider import GeminiProvider
+        if not isinstance(self.provider, GeminiProvider):
+            return None
+
+        current_model = self.config.get("model", self.provider.get_default_model())
+        if "3.1" not in current_model:
+            return None
+
+        gemini_cfg = self.config.get("gemini", {})
+        mode = gemini_cfg.get("thinking_level_mode", "auto")
+
+        if mode == "manual":
+            return gemini_cfg.get("manual_thinking_level", "medium")
+
+        # Mode auto : utiliser le mapping par type de tâche
+        thinking_levels = gemini_cfg.get("thinking_levels", {})
+        default = gemini_cfg.get("default_thinking_level", "medium")
+
+        return thinking_levels.get(task_type, default)
+
+    def _init_cache_manager(self) -> None:
+        """Initialise le GeminiCacheManager si nécessaire (Phase 5)."""
+        if self._cache_manager is None:
+            from src.core.gemini_cache_manager import GeminiCacheManager
+            from src.providers.gemini_provider import GeminiProvider
+            if isinstance(self.provider, GeminiProvider):
+                self._cache_manager = GeminiCacheManager(
+                    api_key=self.provider._api_key
+                )
+
+    def get_or_create_gemini_cache(self, system_prompt: str) -> Optional[str]:
+        """Crée ou récupère un cache Gemini pour le corpus courant (Phase 5).
+
+        Args:
+            system_prompt: Instruction système stable pour ce projet.
+
+        Returns:
+            Nom du cache Gemini ou None si le caching est désactivé/indisponible.
+        """
+        from src.providers.gemini_provider import GeminiProvider
+        if not isinstance(self.provider, GeminiProvider):
+            return None
+
+        gemini_cfg = self.config.get("gemini", {})
+        if not gemini_cfg.get("caching_enabled", False):
+            return None
+
+        current_model = self.config.get("model", self.provider.get_default_model())
+        if not self.provider.supports_caching(current_model):
+            return None
+
+        if not self.state or not self.state.corpus:
+            return None
+
+        self._init_cache_manager()
+        if not self._cache_manager:
+            return None
+
+        try:
+            from src.core.gemini_cache_manager import format_corpus_xml, CacheTooSmallError
+
+            # Construire le corpus XML depuis le corpus structuré
+            corpus_docs = []
+            if self.state.corpus and self.state.corpus.documents:
+                for i, doc in enumerate(self.state.corpus.documents):
+                    chunks = []
+                    for j, chunk in enumerate(getattr(doc, "chunks", [])):
+                        chunks.append({
+                            "id": f"{i+1:03d}_{j+1:03d}",
+                            "page": str(getattr(chunk, "page", "")),
+                            "section": str(getattr(chunk, "section", "")),
+                            "content": str(getattr(chunk, "text", chunk)),
+                        })
+                    corpus_docs.append({
+                        "id": f"{i+1:03d}",
+                        "title": str(getattr(doc, "title", f"Document {i+1}")),
+                        "year": str(getattr(doc, "year", "")),
+                        "type": str(getattr(doc, "doc_type", "")),
+                        "chunks": chunks,
+                    })
+
+            corpus_xml = format_corpus_xml(corpus_docs)
+            ttl = gemini_cfg.get("cache_ttl_seconds", 7200)
+
+            cache_name = self._cache_manager.get_or_create_cache(
+                project_id=self.state.name,
+                corpus_xml=corpus_xml,
+                system_prompt=system_prompt,
+                model=current_model,
+                ttl=ttl,
+                existing_cache_name=self.state.cache_id,
+            )
+
+            with self._state_lock:
+                self.state.cache_id = cache_name
+
+            return cache_name
+
+        except Exception as e:
+            logger.warning(f"Impossible de créer/récupérer le cache Gemini : {e}")
+            return None
 
     def init_project(self, name: str, plan: NormalizedPlan, corpus: Optional[StructuredCorpus] = None) -> ProjectState:
         """Initialise un nouveau projet."""

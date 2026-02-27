@@ -201,3 +201,26 @@ personas:
 dashboard:
   refresh_interval_seconds: 5
   max_log_entries: 100
+
+# ═══════════════════════════════════════════
+# Phase 5 — Gemini 3.1 et Context Caching
+# ═══════════════════════════════════════════
+
+gemini:
+  # ── Context Caching ──
+  caching_enabled: false          # Activé si provider = google et modèle 3.1-pro
+  cache_ttl_seconds: 7200         # TTL du cache (2h par défaut)
+
+  # ── Thinking Level ──
+  thinking_level_mode: "auto"     # "auto" | "manual"
+  manual_thinking_level: "medium" # Valeur si mode = "manual"
+  thinking_levels:
+    summary: "low"
+    plan_generation: "medium"
+    section_generation: "high"
+    refinement: "high"
+    quality_evaluation: "medium"
+    factcheck: "high"
+    feedback_analysis: "low"
+    metadata_extraction: "minimal"
+  default_thinking_level: "medium"
