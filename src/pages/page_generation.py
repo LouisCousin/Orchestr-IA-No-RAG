@@ -1,7 +1,9 @@
-"""Page de génération séquentielle du contenu (Phase 2+3 : multi-pass, agentique, RAG, qualité, factcheck)."""
+"""Page de génération du contenu (Phase 2+3+7 : multi-pass, agentique, RAG, qualité, factcheck, multi-agents)."""
 
+import asyncio
 import copy
 import logging
+import time
 
 import streamlit as st
 from pathlib import Path
@@ -59,9 +61,17 @@ def render():
         st.session_state.current_page = "plan"
         st.rerun()
 
+    # Phase 7 : Sélecteur de mode de génération
+    _render_mode_selector(state, provider)
+
     _render_generation_config(state, provider)
     st.markdown("---")
-    _render_launch_and_progress(state, provider)
+
+    # Dispatcher selon le mode
+    if state.config.get("multi_agent", {}).get("enabled", False):
+        _render_multi_agent_dashboard(state, provider)
+    else:
+        _render_launch_and_progress(state, provider)
 
     # Sections reportées (génération conditionnelle)
     if state.deferred_sections:
@@ -464,6 +474,257 @@ def _run_generation(state, provider, tracker):
 
     state.current_step = "review"
     save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+
+
+def _render_mode_selector(state, provider):
+    """Phase 7 : Sélecteur de mode de génération (séquentiel / multi-agents)."""
+    config = state.config
+    ma_config = config.get("multi_agent", {})
+    current_mode = "multi_agents" if ma_config.get("enabled", False) else "sequentiel"
+
+    mode = st.radio(
+        "Mode de génération",
+        options=["sequentiel", "multi_agents"],
+        index=0 if current_mode == "sequentiel" else 1,
+        format_func=lambda x: {
+            "sequentiel": "Séquentiel (standard)",
+            "multi_agents": "Multi-agents",
+        }[x],
+        horizontal=True,
+        help=(
+            "**Séquentiel** : génération section par section, coût minimal. "
+            "**Multi-agents** : parallèle, vérification, correction automatique."
+        ),
+        key="gen_mode_selector",
+    )
+
+    new_enabled = mode == "multi_agents"
+    if new_enabled != ma_config.get("enabled", False):
+        if "multi_agent" not in config:
+            config["multi_agent"] = {}
+        config["multi_agent"]["enabled"] = new_enabled
+        state.config = config
+        project_id = st.session_state.current_project
+        save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+        st.rerun()
+
+    if new_enabled:
+        # Estimation de coût multi-agents
+        plan = state.plan
+        if plan:
+            section_count = len(plan.sections)
+            corpus_tokens = 2000
+            if state.corpus and hasattr(state.corpus, "total_tokens"):
+                corpus_tokens = state.corpus.total_tokens or 2000
+
+            try:
+                from src.core.agent_framework import AgentConfig
+                from src.core.multi_agent_orchestrator import MultiAgentOrchestrator
+                providers_dict = {}
+                if provider:
+                    providers_dict[provider.name] = provider
+                ma_orch = MultiAgentOrchestrator(
+                    project_state=state,
+                    agent_config=AgentConfig.from_config(config),
+                    providers=providers_dict,
+                )
+                estimate = ma_orch.estimate_pipeline_cost(corpus_tokens, section_count)
+                cost_str = f"${estimate['estimated_usd']:.2f}"
+                budget_ok = estimate["within_budget"]
+                st.caption(
+                    f"Estimation multi-agents : ~{cost_str} — "
+                    f"{section_count} sections, {corpus_tokens:,} tokens corpus"
+                    + ("" if budget_ok else f" (budget max: ${estimate['budget_usd']:.2f})")
+                )
+                if not budget_ok:
+                    st.warning(
+                        f"Le coût estimé ({cost_str}) dépasse le budget configuré "
+                        f"(${estimate['budget_usd']:.2f}). Vous pouvez continuer mais "
+                        f"le coût réel pourra être élevé."
+                    )
+            except Exception as e:
+                logger.warning(f"Erreur estimation multi-agents: {e}")
+
+
+def _render_multi_agent_dashboard(state, provider):
+    """Phase 7 : Tableau de bord multi-agents et lancement."""
+    plan = state.plan
+    config = state.config
+    total_sections = len(plan.sections)
+    already_generated = len(state.generated_sections)
+
+    if already_generated >= total_sections and already_generated > 0:
+        st.success("Toutes les sections ont été générées (multi-agents) !")
+
+        # Afficher le rapport post-génération
+        _render_multi_agent_report(state)
+
+        if st.button("Passer à l'export", type="primary", use_container_width=True):
+            st.session_state.current_page = "export"
+            st.rerun()
+    else:
+        st.markdown("### Pipeline multi-agents")
+        st.caption(
+            "Le mode multi-agents lance 5 agents spécialisés (Architecte, Rédacteur, "
+            "Vérificateur, Évaluateur, Correcteur) en parallèle pour générer, vérifier "
+            "et corriger automatiquement le document."
+        )
+
+        if st.button("Lancer la génération multi-agents", type="primary", use_container_width=True):
+            _run_multi_agent_generation(state, provider)
+
+
+def _run_multi_agent_generation(state, provider):
+    """Exécute le pipeline multi-agents."""
+    from src.core.agent_framework import AgentConfig
+    from src.core.multi_agent_orchestrator import MultiAgentOrchestrator
+
+    project_id = st.session_state.current_project
+    project_dir = PROJECTS_DIR / project_id
+    config = state.config
+
+    # Extraction du corpus si nécessaire
+    if not state.corpus:
+        corpus_dir = project_dir / "corpus"
+        if corpus_dir.exists():
+            extractor = CorpusExtractor()
+            state.corpus = extractor.extract_corpus(corpus_dir)
+
+    # Préparer les providers
+    providers_dict = {}
+    if provider:
+        providers_dict[provider.name] = provider
+
+    # Ajouter les providers additionnels depuis la session
+    for pname in ("openai", "anthropic", "google"):
+        p = st.session_state.get(f"provider_{pname}")
+        if p and pname not in providers_dict:
+            providers_dict[pname] = p
+
+    agent_config = AgentConfig.from_config(config)
+
+    # Placeholder pour le dashboard temps réel
+    dashboard_placeholder = st.empty()
+    status_text = st.empty()
+    progress_bar = st.progress(0, text="Initialisation du pipeline multi-agents...")
+
+    def progress_callback(done, total, phase):
+        if total > 0:
+            progress_bar.progress(done / total, text=f"[{phase}] {done}/{total} sections")
+
+    orchestrator = MultiAgentOrchestrator(
+        project_state=state,
+        agent_config=agent_config,
+        providers=providers_dict,
+        progress_callback=progress_callback,
+    )
+
+    # Lancer le pipeline
+    status_text.info("Pipeline multi-agents en cours...")
+
+    try:
+        # Exécuter l'orchestrateur async
+        result = asyncio.run(orchestrator.run())
+
+        # Mettre à jour l'état
+        state.generated_sections = result.sections
+        state.agent_architecture = result.architecture
+        state.agent_verif_reports = result.verif_reports
+        state.agent_eval_result = result.eval_result
+
+        # Mettre à jour le statut des sections du plan
+        if state.plan:
+            for section in state.plan.sections:
+                if section.id in result.sections:
+                    section.status = "generated"
+                    section.generated_content = result.sections[section.id]
+
+        # Sauvegarder le rapport de coûts
+        state.cost_report = {
+            "total_input_tokens": sum(
+                v.get("input", 0) for v in result.token_breakdown.values()
+            ),
+            "total_output_tokens": sum(
+                v.get("output", 0) for v in result.token_breakdown.values()
+            ),
+            "total_cost_usd": result.total_cost_usd,
+        }
+
+        state.current_step = "review"
+        save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+
+        progress_bar.progress(1.0, text="Pipeline multi-agents terminé !")
+        status_text.success(
+            f"Génération terminée en {result.total_duration_ms / 1000:.1f}s — "
+            f"Coût : ${result.total_cost_usd:.4f}"
+        )
+
+        # Afficher les alertes
+        for alert in result.alerts:
+            st.warning(
+                f"Section \"{alert.get('section_id', '?')}\" — {alert.get('reason', 'Alerte')}"
+            )
+
+    except Exception as e:
+        logger.error(f"Erreur pipeline multi-agents: {e}")
+        status_text.error(f"Erreur : {e}")
+        progress_bar.progress(0, text="Erreur")
+
+    st.rerun()
+
+
+def _render_multi_agent_report(state):
+    """Affiche le rapport post-génération multi-agents."""
+    eval_result = state.agent_eval_result
+    if not eval_result:
+        return
+
+    with st.expander("Rapport de génération multi-agents", expanded=True):
+        score_global = eval_result.get("score_global", 0)
+        recommandation = eval_result.get("recommandation", "?")
+        commentaire = eval_result.get("commentaire", "")
+
+        col1, col2, col3 = st.columns(3)
+        color = "green" if score_global >= 4.0 else ("orange" if score_global >= 3.0 else "red")
+        col1.metric("Score global", f"{score_global:.1f}/5.0")
+        col2.metric("Recommandation", recommandation.capitalize())
+
+        cost = state.cost_report.get("total_cost_usd", 0)
+        col3.metric("Coût total", f"${cost:.4f}")
+
+        if commentaire:
+            st.caption(commentaire)
+
+        # Scores par critère
+        scores_criteres = eval_result.get("scores_par_critere", {})
+        if scores_criteres:
+            st.markdown("**Scores par critère :**")
+            labels = {
+                "pertinence_corpus": "Pertinence corpus",
+                "precision_factuelle": "Précision factuelle",
+                "coherence_interne": "Cohérence interne",
+                "qualite_redactionnelle": "Qualité rédactionnelle",
+                "completude": "Complétude",
+                "respect_plan": "Respect du plan",
+            }
+            for key, label in labels.items():
+                score = scores_criteres.get(key, 0)
+                st.progress(score / 5.0, text=f"{label}: {score:.1f}/5.0")
+
+        # Sections corrigées
+        corrections = eval_result.get("sections_a_corriger", [])
+        if corrections:
+            st.markdown(f"**Sections corrigées :** {', '.join(corrections)}")
+
+        # Rapports de vérification
+        verif_reports = state.agent_verif_reports or {}
+        if verif_reports:
+            st.markdown("**Vérification factuelle :**")
+            for sid, report in verif_reports.items():
+                verdict = report.get("verdict", "?")
+                problems = report.get("problemes", [])
+                icon = {"ok": "OK", "alerte": "!", "erreur": "X"}.get(verdict, "?")
+                st.text(f"  [{icon}] {sid} — {len(problems)} problème(s)")
 
 
 def _render_deferred_sections(state):

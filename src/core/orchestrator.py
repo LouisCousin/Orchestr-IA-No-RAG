@@ -63,6 +63,10 @@ class ProjectState:
     github_file_count: int = 0                              # Nombre de fichiers inclus
     github_token_count: int = 0                             # Tokens estimés du corpus GitHub
     github_acquired_at: Optional[str] = None               # Timestamp ISO d'acquisition
+    # Phase 7 — Multi-agents
+    agent_architecture: Optional[dict] = None               # Résultat de l'Architecte
+    agent_verif_reports: Optional[dict] = None              # Rapports de vérification
+    agent_eval_result: Optional[dict] = None                # Score et métriques évaluateur
     created_at: str = ""
     updated_at: str = ""
 
@@ -107,6 +111,9 @@ class ProjectState:
             "github_file_count": self.github_file_count,
             "github_token_count": self.github_token_count,
             "github_acquired_at": self.github_acquired_at,
+            "agent_architecture": self.agent_architecture,
+            "agent_verif_reports": self.agent_verif_reports,
+            "agent_eval_result": self.agent_eval_result,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
         }
@@ -138,6 +145,9 @@ class ProjectState:
             github_file_count=data.get("github_file_count", 0),
             github_token_count=data.get("github_token_count", 0),
             github_acquired_at=data.get("github_acquired_at"),
+            agent_architecture=data.get("agent_architecture"),
+            agent_verif_reports=data.get("agent_verif_reports"),
+            agent_eval_result=data.get("agent_eval_result"),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
