@@ -793,7 +793,11 @@ class Orchestrator:
                     self.save_state()
                     return self.state.generated_sections
 
-            # Appel API
+            # Appel API — Phase 5 : thinking_level + cached_content
+            task_type_for_thinking = "refinement" if is_refinement else "section_generation"
+            thinking_level = self._get_thinking_level(task_type_for_thinking)
+            cache_name = getattr(self.state, "cache_id", None) if self.state else None
+
             try:
                 response = self.provider.generate(
                     prompt=prompt,
@@ -801,16 +805,32 @@ class Orchestrator:
                     model=model,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    cached_content=cache_name,
+                    thinking_level=thinking_level,
                 )
 
-                self.cost_tracker.record(
-                    section_id=section.id,
-                    model=model,
-                    provider=self.provider.name,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    task_type="refinement" if is_refinement else "generation",
-                )
+                # Enregistrer le coût (avec distinction tokens cachés si applicable)
+                cached_tokens = 0
+                if response.raw_response:
+                    cached_tokens = response.raw_response.get("cached_tokens", 0)
+
+                if cached_tokens and self.provider.name == "google":
+                    self.cost_tracker.track_cached_call(
+                        model=model,
+                        input_tokens=response.input_tokens,
+                        cached_tokens=cached_tokens,
+                        output_tokens=response.output_tokens,
+                        section_id=section.id,
+                    )
+                else:
+                    self.cost_tracker.record(
+                        section_id=section.id,
+                        model=model,
+                        provider=self.provider.name,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
+                        task_type="refinement" if is_refinement else "generation",
+                    )
 
                 # Post-traitement : nettoyage des références [Source N] résiduelles
                 from src.utils.reference_cleaner import clean_source_references
@@ -1138,22 +1158,38 @@ class Orchestrator:
                 section_id=section.id,
             )
 
+            # Phase 5 : thinking_level + cached_content
+            cache_name = getattr(self.state, "cache_id", None) if self.state else None
             response = self.provider.generate(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                cached_content=cache_name,
+                thinking_level=self._get_thinking_level("refinement"),
             )
 
-            self.cost_tracker.record(
-                section_id=section.id,
-                model=model,
-                provider=self.provider.name,
-                input_tokens=response.input_tokens,
-                output_tokens=response.output_tokens,
-                task_type="auto_correction",
-            )
+            cached_tokens = 0
+            if response.raw_response:
+                cached_tokens = response.raw_response.get("cached_tokens", 0)
+            if cached_tokens and self.provider.name == "google":
+                self.cost_tracker.track_cached_call(
+                    model=model,
+                    input_tokens=response.input_tokens,
+                    cached_tokens=cached_tokens,
+                    output_tokens=response.output_tokens,
+                    section_id=section.id,
+                )
+            else:
+                self.cost_tracker.record(
+                    section_id=section.id,
+                    model=model,
+                    provider=self.provider.name,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                    task_type="auto_correction",
+                )
 
             from src.utils.reference_cleaner import clean_source_references
             corrected = clean_source_references(response.content)
@@ -1210,6 +1246,7 @@ class Orchestrator:
                 model=model,
                 temperature=0.3,
                 max_tokens=200,
+                thinking_level=self._get_thinking_level("summary"),
             )
             self.cost_tracker.record(
                 section_id=section.id,
@@ -1340,17 +1377,19 @@ class Orchestrator:
             has_corpus=bool(corpus) or use_plan_corpus,
         )
 
+        plan_model = self.config.get("model", self.provider.get_default_model())
         response = self.provider.generate(
             prompt=prompt,
             system_prompt=system_prompt,
-            model=self.config.get("model", self.provider.get_default_model()),
+            model=plan_model,
             temperature=0.7,
             max_tokens=2000,
+            thinking_level=self._get_thinking_level("plan_generation"),
         )
 
         self.cost_tracker.record(
             section_id="plan",
-            model=self.config.get("model", self.provider.get_default_model()),
+            model=plan_model,
             provider=self.provider.name,
             input_tokens=response.input_tokens,
             output_tokens=response.output_tokens,
