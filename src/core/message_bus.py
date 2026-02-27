@@ -32,7 +32,7 @@ class MessageBus:
 
         Si recipient == "*", diffuse à tous les agents abonnés.
         """
-        async with self._lock:
+        with self._sync_lock:
             self._history.append(message)
 
         if message.recipient == "*":

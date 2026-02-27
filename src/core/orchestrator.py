@@ -609,7 +609,7 @@ class Orchestrator:
                         year=year,
                         apa_reference=apa_reference,
                         page_count=ext.page_count,
-                        token_count=ext.word_count,
+                        token_count=count_tokens(ext.text) if ext.text else 0,
                         char_count=ext.char_count,
                         word_count=ext.word_count,
                         extraction_method=ext.extraction_method,
