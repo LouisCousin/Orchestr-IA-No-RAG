@@ -68,7 +68,7 @@ class AnthropicProvider(BaseProvider):
                 response = client.messages.create(**kwargs)
 
                 content = ""
-                for block in response.content:
+                for block in (response.content or []):
                     if block.type == "text":
                         content += block.text
 

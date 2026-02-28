@@ -120,14 +120,16 @@ class VerifierAgent(BaseAgent):
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.warning(f"Parsing JSON vérificateur échoué pour {section_id}")
-                    return self._default_report(section_id)
-            else:
+            data = None
+            for i, ch in enumerate(content):
+                if ch == '{':
+                    try:
+                        data = json.loads(content[i:])
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            if data is None:
+                logger.warning(f"Parsing JSON vérificateur échoué pour {section_id}")
                 return self._default_report(section_id)
 
         # Valider la structure

@@ -21,7 +21,10 @@ def load_env() -> None:
 def load_yaml(path: Path) -> dict:
     """Charge un fichier YAML."""
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        return {}
+    return data
 
 
 def save_yaml(path: Path, data: dict) -> None:

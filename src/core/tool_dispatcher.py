@@ -206,13 +206,8 @@ class ToolDispatcher:
             section_id=section_id,
             priority=1,
         )
-        # Synchronous publish — run in event loop if available
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.ensure_future(self._bus.publish(message))
-        except RuntimeError:
-            # No running event loop — store via synchronous helper
-            self._bus.store_alert_sync(message)
+        # Toujours utiliser le stockage synchrone pour éviter les tâches orphelines
+        self._bus.store_alert_sync(message)
 
         return "Alerte transmise à l'utilisateur."
 
@@ -336,6 +331,12 @@ class ToolDispatcher:
                 # Réponse finale sans appel de tool
                 return response.content, total_input, total_output
 
+            # Ajouter la réponse assistant une seule fois (avant les résultats de tools)
+            messages.append({
+                "role": "assistant",
+                "content": response.content,
+            })
+
             # Exécuter chaque appel de tool
             for tool_call in tool_calls:
                 tool_name = tool_call["name"]
@@ -343,10 +344,6 @@ class ToolDispatcher:
                 tool_result = self.dispatch(tool_name, tool_args)
                 tool_calls_count += 1
 
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content,
-                })
                 messages.append({
                     "role": "user",
                     "content": (

@@ -149,16 +149,17 @@ class ArchitectAgent(BaseAgent):
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
-            # Tenter d'extraire le JSON du texte
-            import re
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.error("Impossible de parser le JSON de l'Architecte")
-                    return self._build_default_architecture(plan)
-            else:
+            # Tenter d'extraire le JSON du texte en cherchant chaque '{' ouvrante
+            data = None
+            for i, ch in enumerate(content):
+                if ch == '{':
+                    try:
+                        data = json.loads(content[i:])
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            if data is None:
+                logger.error("Impossible de parser le JSON de l'Architecte")
                 return self._build_default_architecture(plan)
 
         # Valider et compléter la structure
