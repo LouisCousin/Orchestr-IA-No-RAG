@@ -184,11 +184,14 @@ def _load_project(project_id: str):
             info = PROVIDERS_INFO.get(provider_name, {})
             api_key = os.environ.get(info.get("env_var", ""), "")
             if api_key and api_key != info.get("placeholder", ""):
-                provider = create_provider(provider_name, api_key)
-                if provider and provider.is_available():
-                    st.session_state.provider = provider
-                    st.session_state.cost_tracker = CostTracker()
-                    provider_restored = True
+                try:
+                    provider = create_provider(provider_name, api_key)
+                    if provider.is_available():
+                        st.session_state.provider = provider
+                        st.session_state.cost_tracker = CostTracker()
+                        provider_restored = True
+                except ValueError:
+                    pass  # Unknown provider — will redirect to configuration page
 
         if provider_restored:
             # Navigation vers la page appropriée

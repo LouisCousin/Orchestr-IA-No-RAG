@@ -19,6 +19,9 @@ def count_tokens(text: str, model: str = "gpt-4o") -> int:
 
 def _heuristic_count(text: str) -> int:
     """Estimation heuristique du nombre de tokens (1 token ≈ 4 caractères en français)."""
+    # B15: empty text should return 0 tokens, not 1
+    if not text:
+        return 0
     return max(1, len(text) // 4)
 
 
@@ -26,4 +29,5 @@ def estimate_pages(token_count: int, tokens_per_page: int = 400) -> float:
     """Estime le nombre de pages à partir d'un nombre de tokens."""
     if tokens_per_page <= 0:
         return 0.0
-    return token_count / tokens_per_page
+    # B36: clamp negative token counts to 0
+    return max(0, token_count) / tokens_per_page

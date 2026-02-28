@@ -139,8 +139,20 @@ def _chunk_by_sections(
             # Section courte → 1 chunk
             if token_count < min_chunk_tokens and chunks and chunks[-1].section_title == current_section_title:
                 # Trop court → fusionner avec le chunk précédent (même section uniquement)
-                chunks[-1].text += "\n" + text
-                chunks[-1].token_count = _count_tokens(chunks[-1].text)
+                # B20: only merge if the result won't exceed max_chunk_tokens
+                merged_count = _count_tokens(chunks[-1].text + "\n" + text)
+                if merged_count <= max_chunk_tokens:
+                    chunks[-1].text += "\n" + text
+                    chunks[-1].token_count = merged_count
+                else:
+                    # Would exceed limit: keep as separate chunk
+                    chunks.append(Chunk(
+                        doc_id=doc_id,
+                        text=text,
+                        page_number=page,
+                        section_title=current_section_title,
+                        chunk_index=len(chunks),
+                    ))
             else:
                 chunks.append(Chunk(
                     doc_id=doc_id,
@@ -175,9 +187,21 @@ def _chunk_by_sections(
                     buffer = candidate
 
             if buffer.strip():
-                if _count_tokens(buffer) < min_chunk_tokens and chunks and chunks[-1].section_title == current_section_title:
-                    chunks[-1].text += "\n" + buffer.strip()
-                    chunks[-1].token_count = _count_tokens(chunks[-1].text)
+                buf_tokens = _count_tokens(buffer)
+                if buf_tokens < min_chunk_tokens and chunks and chunks[-1].section_title == current_section_title:
+                    # B20: only merge if the result won't exceed max_chunk_tokens
+                    merged_count = _count_tokens(chunks[-1].text + "\n" + buffer.strip())
+                    if merged_count <= max_chunk_tokens:
+                        chunks[-1].text += "\n" + buffer.strip()
+                        chunks[-1].token_count = merged_count
+                    else:
+                        chunks.append(Chunk(
+                            doc_id=doc_id,
+                            text=buffer.strip(),
+                            page_number=page,
+                            section_title=current_section_title,
+                            chunk_index=len(chunks),
+                        ))
                 else:
                     chunks.append(Chunk(
                         doc_id=doc_id,

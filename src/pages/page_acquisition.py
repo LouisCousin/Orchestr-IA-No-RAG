@@ -308,7 +308,7 @@ def _render_github_acquisition():
     selection = st.session_state["gh_file_selection"]
 
     with st.expander("Sélectionner les fichiers individuellement", expanded=False):
-        updated = False
+        # B40: removed unused variable `updated = False`
         for f in filtered[:200]:  # Limite UI à 200 entrées
             path = f["path"]
             ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
@@ -320,7 +320,6 @@ def _render_github_acquisition():
             )
             if checked != selection.get(path):
                 selection[path] = checked
-                updated = True
         if len(filtered) > 200:
             st.caption(f"Affichage limité aux 200 premiers fichiers sur {len(filtered)}.")
 

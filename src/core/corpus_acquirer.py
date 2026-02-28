@@ -10,6 +10,7 @@ Phase 4 (Perf) : téléchargement asynchrone via aiohttp + aiofiles,
 import asyncio
 import logging
 import shutil
+import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -73,6 +74,8 @@ class CorpusAcquirer:
         # preventing duplicate filenames when multiple downloads finish
         # concurrently.
         self._seq_lock: Optional[asyncio.Lock] = None
+        # B04: threading lock to protect lazy creation of _seq_lock
+        self._seq_lock_init = threading.Lock()
 
     def _get_session(self):
         """Crée ou retourne la session HTTP persistante."""
@@ -568,9 +571,15 @@ class CorpusAcquirer:
             return AcquisitionStatus(source=url, status="FAILED", message=f"Échec téléchargement : {e}")
 
     def _get_seq_lock(self) -> asyncio.Lock:
-        """Lazily create the asyncio lock (must be called inside an event loop)."""
+        """Lazily create the asyncio lock (must be called inside an event loop).
+
+        B04: Protected by a threading lock to prevent double initialization
+        when two coroutines call this concurrently.
+        """
         if self._seq_lock is None:
-            self._seq_lock = asyncio.Lock()
+            with self._seq_lock_init:
+                if self._seq_lock is None:
+                    self._seq_lock = asyncio.Lock()
         return self._seq_lock
 
     async def _save_bytes_async(
@@ -671,7 +680,17 @@ class CorpusAcquirer:
                     asyncio.run,
                     self.acquire_urls_async(urls, report, max_concurrent)
                 )
-                return future.result()
+                # B06: use timeout and let exceptions propagate correctly
+                return future.result(timeout=self.read_timeout * len(urls) + 60)
+        except concurrent.futures.TimeoutError:
+            logger.error("Timeout during async URL acquisition in thread")
+            if report is None:
+                report = AcquisitionReport()
+            report.add(AcquisitionStatus(
+                source="batch", status="ERROR",
+                message="Timeout global lors de l'acquisition asynchrone"
+            ))
+            return report
         except RuntimeError:
             return asyncio.run(self.acquire_urls_async(urls, report, max_concurrent))
 

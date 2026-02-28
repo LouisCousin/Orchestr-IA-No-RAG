@@ -225,9 +225,12 @@ def _render_view_plan(state):
         coverage_indicator = ""
         if plan_context and plan_context.coverage:
             best_score = 0
+            # B11: guard against None values on section.title and theme
+            section_title_lower = (section.title or "").lower()
             for theme, cov in plan_context.coverage.items():
-                if (theme.lower() in section.title.lower()
-                        or section.title.lower() in theme.lower()):
+                theme_lower = (theme or "").lower()
+                if (theme_lower in section_title_lower
+                        or section_title_lower in theme_lower):
                     best_score = max(best_score, cov.get("avg_score", 0))
             if best_score > 0:
                 if best_score >= 0.5:

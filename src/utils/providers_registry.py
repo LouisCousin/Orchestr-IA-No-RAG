@@ -43,12 +43,21 @@ def get_provider_info(provider_name: str) -> dict:
 
 
 def get_default_model(provider_name: str) -> str:
-    """Retourne le modèle par défaut d'un fournisseur."""
-    info = PROVIDERS_INFO.get(provider_name, {})
-    return info.get("default_model", "gpt-4o")
+    """Retourne le modèle par défaut d'un fournisseur.
+
+    Raises:
+        ValueError: If provider_name is not a known provider.
+    """
+    # B09: raise ValueError instead of returning a wrong model for unknown providers
+    if provider_name not in PROVIDERS_INFO:
+        raise ValueError(
+            f"Fournisseur inconnu : {provider_name!r}. "
+            f"Disponibles : {list(PROVIDERS_INFO.keys())}"
+        )
+    return PROVIDERS_INFO[provider_name]["default_model"]
 
 
-def create_provider(provider_name: str, api_key: str) -> Optional["BaseProvider"]:
+def create_provider(provider_name: str, api_key: str) -> "BaseProvider":
     """Crée une instance du fournisseur sélectionné.
 
     Args:
@@ -56,8 +65,12 @@ def create_provider(provider_name: str, api_key: str) -> Optional["BaseProvider"
         api_key: Clé API pour le fournisseur.
 
     Returns:
-        Instance du provider ou None si le nom est inconnu.
+        Instance du provider.
+
+    Raises:
+        ValueError: If provider_name is not a known provider.
     """
+    # B08: raise ValueError consistently (like get_provider_info) instead of returning None
     if provider_name == "openai":
         from src.providers.openai_provider import OpenAIProvider
         return OpenAIProvider(api_key=api_key)
@@ -67,4 +80,7 @@ def create_provider(provider_name: str, api_key: str) -> Optional["BaseProvider"
     elif provider_name == "google":
         from src.providers.gemini_provider import GeminiProvider
         return GeminiProvider(api_key=api_key)
-    return None
+    raise ValueError(
+        f"Fournisseur inconnu : {provider_name!r}. "
+        f"Disponibles : {list(PROVIDERS_INFO.keys())}"
+    )

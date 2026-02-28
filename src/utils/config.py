@@ -19,12 +19,24 @@ def load_env() -> None:
 
 
 def load_yaml(path: Path) -> dict:
-    """Charge un fichier YAML."""
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
+    """Charge un fichier YAML.
+
+    B31: handles FileNotFoundError and yaml.YAMLError gracefully with logging.
+    """
+    import logging
+    _logger = logging.getLogger("orchestria")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict):
+            return {}
+        return data
+    except FileNotFoundError:
+        _logger.warning(f"Fichier de configuration introuvable : {path}")
         return {}
-    return data
+    except yaml.YAMLError as e:
+        _logger.error(f"Erreur de parsing YAML dans {path} : {e}")
+        return {}
 
 
 def save_yaml(path: Path, data: dict) -> None:

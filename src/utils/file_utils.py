@@ -3,9 +3,13 @@
 import hashlib
 import json
 import re
+import threading
 import unicodedata
 from pathlib import Path
 from typing import Optional
+
+# B16: thread-safe lock for sequence number allocation (TOCTOU fix)
+_seq_lock = threading.Lock()
 
 
 def ensure_dir(path: Path) -> Path:
@@ -76,20 +80,28 @@ def sanitize_filename(name: str) -> str:
 
 
 def get_next_sequence_number(directory: Path) -> int:
-    """Retourne le prochain numéro séquentiel pour les fichiers du corpus."""
-    existing = list(directory.glob("*"))
-    max_num = 0
-    for f in existing:
-        match = re.match(r"^(\d{3})_", f.name)
-        if match:
-            max_num = max(max_num, int(match.group(1)))
-    return max_num + 1
+    """Retourne le prochain numéro séquentiel pour les fichiers du corpus.
+
+    B16: Uses a threading lock to prevent TOCTOU race conditions, and
+    supports sequence numbers >= 1000 via relaxed regex.
+    """
+    with _seq_lock:
+        existing = list(directory.glob("*"))
+        max_num = 0
+        for f in existing:
+            # B16: changed from r"^(\d{3})_" to r"^(\d+)_" to support >= 1000
+            match = re.match(r"^(\d+)_", f.name)
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+        return max_num + 1
 
 
 def format_sequence_name(seq_num: int, source_name: str, ext: str) -> str:
-    """Formate un nom de fichier séquentiel : NNN_source.ext."""
+    """Formate un nom de fichier séquentiel : NNN_source.ext (or NNNN for seq >= 1000)."""
     clean_name = sanitize_filename(source_name)
-    return f"{seq_num:03d}_{clean_name}{ext}"
+    # B16: use at least 3 digits, expanding to 4+ for seq >= 1000
+    width = max(3, len(str(seq_num)))
+    return f"{seq_num:0{width}d}_{clean_name}{ext}"
 
 
 def get_mime_type(path: Path) -> Optional[str]:

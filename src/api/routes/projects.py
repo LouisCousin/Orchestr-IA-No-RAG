@@ -356,7 +356,8 @@ async def _run_generation_task(project_id: str) -> None:
         # Enregistrer le MessageBus pour le relais WebSocket
         register_bus(project_id, orchestrator.bus)
 
-        architecture = state.agent_architecture or orchestrator._default_architecture()
+        # B07: defensive getattr — agent_architecture may not exist on ProjectState
+        architecture = getattr(state, "agent_architecture", None) or orchestrator._default_architecture()
         result = await orchestrator.run_generation_phase(architecture)
 
         # Mettre à jour l'état avec les résultats
@@ -474,8 +475,11 @@ async def configure_provider(project_id: str, body: ProviderConfig):
 def _configure_provider(provider_name: str, api_key: str) -> None:
     """Configure un provider IA dans le registre global."""
     from src.utils.providers_registry import create_provider
-    provider = create_provider(provider_name, api_key)
-    if not provider or not provider.is_available():
+    try:
+        provider = create_provider(provider_name, api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not provider.is_available():
         raise HTTPException(status_code=400, detail=f"Clé API invalide pour {provider_name}")
     providers = _get_providers()
     providers[provider_name] = provider

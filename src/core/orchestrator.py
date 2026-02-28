@@ -1091,6 +1091,8 @@ class Orchestrator:
                     section_id=section.id,
                 )
                 if checkpoint:
+                    # B03: drain pending evaluations before early return
+                    self._drain_pending_evaluations()
                     self.save_state()
                     return self.state.generated_sections
 
@@ -1173,6 +1175,8 @@ class Orchestrator:
                     metadata={"tokens": response.output_tokens, "pass": pass_number},
                 )
                 if checkpoint:
+                    # B03: drain pending evaluations before early return
+                    self._drain_pending_evaluations()
                     self.save_state()
                     return self.state.generated_sections
 
@@ -1180,14 +1184,7 @@ class Orchestrator:
 
         # Phase 4 (Perf) : attendre la fin de toutes les évaluations en arrière-plan
         # avant de finaliser la passe.
-        if self._pending_evaluations:
-            logger.info(f"Attente de {len(self._pending_evaluations)} évaluations en arrière-plan...")
-            for future in self._pending_evaluations:
-                try:
-                    future.result()  # Attendre la fin
-                except Exception as e:
-                    logger.warning(f"Évaluation en arrière-plan échouée : {e}")
-            self._pending_evaluations.clear()
+        self._drain_pending_evaluations()
 
         if progress_callback:
             progress_callback("Génération terminée !", 1.0)
@@ -1252,6 +1249,17 @@ class Orchestrator:
                     self.state.generated_sections[section_id] = modified_content
 
         return self.generate_all_sections(pass_number=self.state.current_pass if self.state else 1)
+
+    def _drain_pending_evaluations(self) -> None:
+        """Wait for all pending background evaluations to complete (B03 fix)."""
+        if self._pending_evaluations:
+            logger.info(f"Attente de {len(self._pending_evaluations)} évaluations en arrière-plan...")
+            for future in self._pending_evaluations:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.warning(f"Évaluation en arrière-plan échouée : {e}")
+            self._pending_evaluations.clear()
 
     def _run_post_generation_evaluation_background(
         self,

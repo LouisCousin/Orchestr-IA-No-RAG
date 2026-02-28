@@ -385,7 +385,8 @@ class ExportEngine:
                 continue
 
             # Détection de sous-titre en gras
-            if stripped.startswith("**") and stripped.endswith("**") and stripped.count("**") == 2 and len(stripped) > 4 and stripped[2:-2].strip():
+            # B30: use regex instead of count("**") == 2 which fails for "**a** and **b**"
+            if re.match(r"^\*\*[^*]+\*\*$", stripped) and len(stripped) > 4:
                 flush()
                 blocks.append(("bold_heading", stripped))
                 current_type = "paragraph"

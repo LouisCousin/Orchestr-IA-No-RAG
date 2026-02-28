@@ -44,7 +44,21 @@ class CheckpointConfig:
     after_generation: bool = False
     final_review: bool = True
 
+    # B34: known checkpoint fields for validation
+    _KNOWN_FIELDS = frozenset({
+        "after_plan_validation", "after_corpus_acquisition", "after_extraction",
+        "after_prompt_generation", "after_generation", "final_review",
+    })
+
     def is_enabled(self, checkpoint_type: str) -> bool:
+        # B34: validate checkpoint_type to detect typos immediately
+        if checkpoint_type not in self._KNOWN_FIELDS:
+            import logging
+            logging.getLogger("orchestria").warning(
+                f"Unknown checkpoint type: {checkpoint_type!r}. "
+                f"Known types: {sorted(self._KNOWN_FIELDS)}"
+            )
+            return False
         return getattr(self, checkpoint_type, False)
 
     def to_dict(self) -> dict:

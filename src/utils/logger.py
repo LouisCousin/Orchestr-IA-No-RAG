@@ -1,15 +1,23 @@
 """Système de journalisation d'Orchestr'IA."""
 
 import logging
+from collections import deque
 from datetime import datetime
 from typing import Optional
 
+# B32+B33: maximum number of log entries to retain (prevents unbounded memory growth)
+_MAX_LOG_ENTRIES = 5000
+
 
 class ActivityLog:
-    """Journal d'activité pour le suivi en temps réel dans l'interface."""
+    """Journal d'activité pour le suivi en temps réel dans l'interface.
 
-    def __init__(self):
-        self.entries: list[dict] = []
+    B32: uses a bounded deque to prevent unbounded memory growth.
+    B33: deque is thread-safe for append/pop operations.
+    """
+
+    def __init__(self, maxlen: int = _MAX_LOG_ENTRIES):
+        self.entries: deque[dict] = deque(maxlen=maxlen)
 
     def add(self, message: str, level: str = "info", section: Optional[str] = None) -> None:
         """Ajoute une entrée au journal."""
@@ -35,7 +43,7 @@ class ActivityLog:
 
     def get_recent(self, n: int = 50) -> list[dict]:
         """Retourne les n dernières entrées."""
-        return self.entries[-n:]
+        return list(self.entries)[-n:]
 
     def clear(self) -> None:
         self.entries.clear()
