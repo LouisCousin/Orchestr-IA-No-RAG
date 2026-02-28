@@ -42,9 +42,7 @@ class ProjectStore:
         return self._project_dir(project_id) / "state.json"
 
     def _get_lock(self, project_id: str) -> asyncio.Lock:
-        if project_id not in self._locks:
-            self._locks[project_id] = asyncio.Lock()
-        return self._locks[project_id]
+        return self._locks.setdefault(project_id, asyncio.Lock())
 
     # ── CRUD ─────────────────────────────────────────────────────────────
 

@@ -1078,6 +1078,13 @@ class MultiAgentOrchestrator:
         """Exécute un Vérificateur avec sémaphore."""
         async with self._sem_verif:
             agent = self.agents.get("verificateur")
+            if not agent:
+                return section_id, AgentResult(
+                    agent_name="verificateur",
+                    section_id=section_id,
+                    success=False,
+                    error="Agent verificateur non disponible",
+                )
             result = await agent.run(task)
             result.section_id = section_id
             return section_id, result

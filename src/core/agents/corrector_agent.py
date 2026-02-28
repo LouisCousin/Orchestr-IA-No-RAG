@@ -155,7 +155,11 @@ class CorrectorAgent(BaseAgent):
             return "Aucun rapport de vérification disponible."
 
         parts = [f"Verdict : {report.get('verdict', '?')}"]
-        parts.append(f"Score cohérence : {report.get('score_coherence', 0):.2f}")
+        try:
+            score_coherence = float(report.get('score_coherence', 0))
+        except (TypeError, ValueError):
+            score_coherence = 0.0
+        parts.append(f"Score cohérence : {score_coherence:.2f}")
 
         problems = report.get("problemes", [])
         if problems:

@@ -45,7 +45,7 @@ class MessageBus:
 
         Si recipient == "*", diffuse à tous les agents abonnés.
         """
-        async with self._lock:
+        with self._sync_lock:
             self._history.append(message)
 
         if message.recipient == "*":
@@ -96,11 +96,12 @@ class MessageBus:
         timeout_s: int = 300,
     ) -> Optional[str]:
         """Attend la publication d'une section spécifique avec timeout."""
-        if section_id in self._sections:
-            return self._sections[section_id]
+        async with self._lock:
+            if section_id in self._sections:
+                return self._sections[section_id]
 
-        if section_id not in self._section_events:
-            self._section_events[section_id] = asyncio.Event()
+            if section_id not in self._section_events:
+                self._section_events[section_id] = asyncio.Event()
 
         try:
             await asyncio.wait_for(
@@ -151,6 +152,7 @@ class MessageBus:
         Les erreurs d'envoi sur un listener individuel sont loggées mais
         n'interrompent pas la diffusion aux autres listeners.
         """
+        event = dict(event)
         if not event.get("timestamp"):
             event["timestamp"] = time.time()
 

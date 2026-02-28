@@ -152,13 +152,15 @@ class EvaluatorAgent(BaseAgent):
         try:
             data = json.loads(content)
         except json.JSONDecodeError:
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    return self._default_evaluation(sections, quality_threshold)
-            else:
+            data = None
+            for i, ch in enumerate(content):
+                if ch == '{':
+                    try:
+                        data = json.loads(content[i:])
+                        break
+                    except json.JSONDecodeError:
+                        continue
+            if data is None:
                 return self._default_evaluation(sections, quality_threshold)
 
         # Valider et compléter

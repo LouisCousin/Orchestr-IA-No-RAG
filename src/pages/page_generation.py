@@ -797,12 +797,11 @@ def _run_architect_only(state, provider):
         save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
 
         status_text.success("Architecture générée. Veuillez valider avant de continuer.")
+        st.rerun()
 
     except Exception as e:
         logger.error(f"Erreur phase Architecte: {e}")
         status_text.error(f"Erreur : {e}")
-
-    st.rerun()
 
 
 def _run_generation_after_validation(state, provider, architecture):
@@ -835,7 +834,7 @@ def _run_generation_after_validation(state, provider, architecture):
     try:
         result = asyncio.run(orchestrator.run_generation_phase(architecture))
 
-        state.generated_sections = result.sections
+        state.generated_sections.update(result.sections)
         state.agent_architecture = result.architecture
         state.agent_verif_reports = result.verif_reports
         state.agent_eval_result = result.eval_result
@@ -870,12 +869,12 @@ def _run_generation_after_validation(state, provider, architecture):
                 f"Section \"{alert.get('section_id', '?')}\" — {alert.get('reason', 'Alerte')}"
             )
 
+        st.rerun()
+
     except Exception as e:
         logger.error(f"Erreur pipeline multi-agents: {e}")
         status_text.error(f"Erreur : {e}")
         progress_bar.progress(0, text="Erreur")
-
-    st.rerun()
 
 
 def _render_multi_agent_report(state):

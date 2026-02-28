@@ -82,6 +82,12 @@ class GeminiProvider(BaseProvider):
         """
         model = model or self.get_default_model()
 
+        if types is None:
+            raise ImportError(
+                "Le package google-genai n'est pas installé. "
+                "Installez-le avec : pip install google-genai"
+            )
+
         # R2 : Avertir si cached_content ET system_prompt sont fournis
         if cached_content and system_prompt:
             logger.warning(
@@ -90,6 +96,7 @@ class GeminiProvider(BaseProvider):
             )
 
         last_error = None
+        cache_retried = False
         for attempt in range(self._max_retries + 1):
             try:
                 client = self._get_client()
@@ -124,7 +131,12 @@ class GeminiProvider(BaseProvider):
                     config=config,
                 )
 
-                content = response.text or ""
+                # response.text peut lever ValueError si la réponse est bloquée
+                try:
+                    content = response.text or ""
+                except ValueError:
+                    content = ""
+                    logger.warning("Réponse Gemini bloquée par les filtres de sécurité")
 
                 # Extraire les tokens depuis usage_metadata
                 input_tokens = 0
@@ -157,31 +169,30 @@ class GeminiProvider(BaseProvider):
                 error_str = str(e)
                 last_error = e
 
-                # Gestion erreur 400 : conflit tools + cached_content
+                # Gestion erreurs liées au cache — ne pas consommer le budget de retry
+                is_cache_error = False
                 if "cached_content and tools are mutually exclusive" in error_str:
                     logger.error(
                         "Conflit cached_content/tools détecté (erreur 400). "
                         "Relance sans cache."
                     )
-                    cached_content = None
-                    continue
-
-                # Gestion erreur 400 : corpus trop petit
-                if "minimum token count" in error_str.lower():
+                    is_cache_error = True
+                elif "minimum token count" in error_str.lower():
                     logger.error(
                         "Corpus trop petit pour le caching (erreur 400). "
                         "Basculement en mode standard."
                     )
-                    cached_content = None
-                    continue
-
-                # Gestion erreur : cache introuvable / expiré
-                if "cachedContent" in error_str and "not found" in error_str.lower():
+                    is_cache_error = True
+                elif "cachedContent" in error_str and "not found" in error_str.lower():
                     logger.error(
                         f"Cache Gemini introuvable ou expiré : {cached_content}. "
                         "Basculement en mode standard."
                     )
+                    is_cache_error = True
+
+                if is_cache_error and not cache_retried:
                     cached_content = None
+                    cache_retried = True
                     continue
 
                 if attempt < self._max_retries:

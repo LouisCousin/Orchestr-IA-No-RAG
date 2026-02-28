@@ -63,6 +63,8 @@ class OpenAIProvider(BaseProvider):
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+                if not response.choices:
+                    raise RuntimeError("L'API OpenAI n'a retourné aucun choix dans la réponse")
                 choice = response.choices[0]
                 usage = response.usage
                 return AIResponse(
@@ -124,6 +126,8 @@ class OpenAIProvider(BaseProvider):
                     max_tokens=max_tokens,
                     response_format={"type": "json_object"},
                 )
+                if not response.choices:
+                    raise RuntimeError("L'API OpenAI n'a retourné aucun choix dans la réponse JSON")
                 choice = response.choices[0]
                 usage = response.usage
                 return AIResponse(
