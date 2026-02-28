@@ -340,6 +340,13 @@ class MultiAgentOrchestrator:
             sections = await self._run_generation_phase(architecture)
             self._result.sections = sections
 
+            # Circuit breaker Batch : si le pipeline attend un batch,
+            # ne pas exécuter la vérification sur des données incomplètes.
+            if getattr(self.state, "current_step", "") == "waiting_for_batch":
+                logger.info("Mode Batch activé : interruption du pipeline avant vérification.")
+                self._result.total_duration_ms = int((time.time() - self._start_time) * 1000)
+                return self._result
+
             # Étape 3 : Vérification parallèle
             verif_reports = await self._run_verification_phase(sections, architecture)
             self._result.verif_reports = verif_reports
@@ -436,6 +443,13 @@ class MultiAgentOrchestrator:
             # Étape 2 : Génération parallèle
             sections = await self._run_generation_phase(architecture)
             self._result.sections = sections
+
+            # Circuit breaker Batch : si le pipeline attend un batch,
+            # ne pas exécuter la vérification sur des données incomplètes.
+            if getattr(self.state, "current_step", "") == "waiting_for_batch":
+                logger.info("Mode Batch activé (HITL) : interruption du pipeline avant vérification.")
+                self._result.total_duration_ms = int((time.time() - self._start_time) * 1000)
+                return self._result
 
             # Étape 3 : Vérification parallèle
             verif_reports = await self._run_verification_phase(sections, architecture)

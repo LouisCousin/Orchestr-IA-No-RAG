@@ -4,6 +4,7 @@ Phase 2.5 : ajout du support batch via Message Batches API.
 """
 
 import os
+import random
 import time
 import logging
 from typing import Optional
@@ -89,11 +90,16 @@ class AnthropicProvider(BaseProvider):
                 last_error = e
                 if attempt < self._max_retries:
                     delay = self._base_delay * (2 ** attempt)
+                    jitter = delay * 0.2 * (2 * random.random() - 1)
+                    delay += jitter
                     logger.warning(
                         f"Erreur API Anthropic (tentative {attempt + 1}/{self._max_retries + 1}): {e}. "
-                        f"Retry dans {delay}s..."
+                        f"Retry dans {delay:.1f}s..."
                     )
                     time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Échec définitif API Anthropic après {self._max_retries + 1} tentatives: {last_error}")
 
         raise RuntimeError(f"Échec après {self._max_retries + 1} tentatives: {last_error}")
 

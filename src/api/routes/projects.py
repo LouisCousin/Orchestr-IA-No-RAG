@@ -338,6 +338,7 @@ async def _run_generation_task(project_id: str) -> None:
     from src.api.routes.ws import register_bus, unregister_bus
 
     store = _get_store()
+    state = None
     try:
         state = store.load_state(project_id, force_reload=True)
         providers = _get_providers()
@@ -373,7 +374,15 @@ async def _run_generation_task(project_id: str) -> None:
         )
 
     except Exception as exc:
-        logger.error(f"Erreur génération {project_id}: {exc}")
+        logger.exception(f"Crash critique tâche génération projet {project_id}")
+        # Persister l'état d'erreur pour survivre à un redémarrage
+        if state is not None:
+            state.current_step = "error"
+            state.last_error = str(exc)
+            try:
+                store.save_state(project_id, state)
+            except Exception:
+                logger.exception(f"Impossible de persister l'état d'erreur pour {project_id}")
     finally:
         unregister_bus(project_id)
         await store.release_generation_lock(project_id)

@@ -5,6 +5,7 @@ Phase 2.5 : ajout du support batch via /v1/batches.
 
 import json
 import os
+import random
 import tempfile
 import time
 import logging
@@ -81,8 +82,13 @@ class OpenAIProvider(BaseProvider):
                 last_error = e
                 if attempt < self._max_retries:
                     delay = self._base_delay * (2 ** attempt)
-                    logger.warning(f"Erreur API OpenAI (tentative {attempt + 1}/{self._max_retries + 1}): {e}. Retry dans {delay}s...")
+                    jitter = delay * 0.2 * (2 * random.random() - 1)
+                    delay += jitter
+                    logger.warning(f"Erreur API OpenAI (tentative {attempt + 1}/{self._max_retries + 1}): {e}. Retry dans {delay:.1f}s...")
                     time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Échec définitif API OpenAI après {self._max_retries + 1} tentatives: {last_error}")
 
         raise RuntimeError(f"Échec après {self._max_retries + 1} tentatives: {last_error}")
 
@@ -144,11 +150,16 @@ class OpenAIProvider(BaseProvider):
                 last_error = e
                 if attempt < self._max_retries:
                     delay = self._base_delay * (2 ** attempt)
+                    jitter = delay * 0.2 * (2 * random.random() - 1)
+                    delay += jitter
                     logger.warning(
                         f"Erreur API OpenAI JSON (tentative {attempt + 1}/"
-                        f"{self._max_retries + 1}): {e}. Retry dans {delay}s..."
+                        f"{self._max_retries + 1}): {e}. Retry dans {delay:.1f}s..."
                     )
                     time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Échec définitif API OpenAI JSON après {self._max_retries + 1} tentatives: {last_error}")
 
         raise RuntimeError(f"Échec generate_json après {self._max_retries + 1} tentatives: {last_error}")
 
