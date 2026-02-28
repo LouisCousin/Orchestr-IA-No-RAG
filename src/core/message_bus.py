@@ -3,21 +3,32 @@
 Phase 7 : permet la notification de complétion, la transmission d'alertes,
            le stockage et la récupération de sections générées, et la mise
            à jour du tableau de bord temps réel.
+
+Phase 3 Sprint 3 : Event Emitter asynchrone relié au WebSocket.
+           Le bus émet des trames JSON vers les clients connectés via
+           un système de listeners enregistrés par le serveur API.
 """
 
 import asyncio
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Any, Callable, Coroutine, Optional
 
 from src.core.agent_framework import AgentMessage
 
 logger = logging.getLogger("orchestria")
 
+# Type alias pour les listeners WebSocket
+WSEventListener = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
+
 
 class MessageBus:
-    """Bus de messages asynchrone pour la communication inter-agents."""
+    """Bus de messages asynchrone pour la communication inter-agents.
+
+    Phase 3 Sprint 3 : agit également comme Event Emitter asynchrone.
+    Les listeners WebSocket enregistrés reçoivent les événements en JSON.
+    """
 
     def __init__(self):
         self._queues: dict[str, asyncio.Queue] = {}
@@ -26,6 +37,8 @@ class MessageBus:
         self._lock: asyncio.Lock = asyncio.Lock()
         self._sync_lock: threading.Lock = threading.Lock()
         self._section_events: dict[str, asyncio.Event] = {}
+        # Phase 3 Sprint 3 : listeners WebSocket
+        self._ws_listeners: list[WSEventListener] = []
 
     async def publish(self, message: AgentMessage) -> None:
         """Publie un message dans la file du destinataire.
@@ -117,3 +130,38 @@ class MessageBus:
         self._history.clear()
         self._sections.clear()
         self._section_events.clear()
+        self._ws_listeners.clear()
+
+    # ── Phase 3 Sprint 3 : Event Emitter pour WebSocket ─────────────────
+
+    def add_ws_listener(self, listener: WSEventListener) -> None:
+        """Enregistre un listener WebSocket qui recevra les événements."""
+        self._ws_listeners.append(listener)
+
+    def remove_ws_listener(self, listener: WSEventListener) -> None:
+        """Supprime un listener WebSocket."""
+        try:
+            self._ws_listeners.remove(listener)
+        except ValueError:
+            pass
+
+    async def emit_ws_event(self, event: dict[str, Any]) -> None:
+        """Émet un événement JSON vers tous les listeners WebSocket enregistrés.
+
+        Les erreurs d'envoi sur un listener individuel sont loggées mais
+        n'interrompent pas la diffusion aux autres listeners.
+        """
+        if not event.get("timestamp"):
+            event["timestamp"] = time.time()
+
+        dead_listeners: list[WSEventListener] = []
+        for listener in self._ws_listeners:
+            try:
+                await listener(event)
+            except Exception as exc:
+                logger.warning(f"MessageBus: erreur envoi WS event: {exc}")
+                dead_listeners.append(listener)
+
+        # Retirer les listeners déconnectés
+        for dead in dead_listeners:
+            self.remove_ws_listener(dead)
