@@ -1,12 +1,13 @@
-"""Tests unitaires pour le MultiAgentOrchestrator (Phase 7)."""
+"""Tests unitaires pour le MultiAgentOrchestrator (Phase 7 + Phase 8)."""
 
 import asyncio
 import pytest
 
-from src.core.agent_framework import AgentConfig, AgentState
+from src.core.agent_framework import AgentConfig, AgentMessage, AgentState
 from src.core.multi_agent_orchestrator import (
     GenerationResult,
     MultiAgentOrchestrator,
+    get_descendants,
 )
 from src.core.orchestrator import ProjectState
 from src.core.plan_parser import NormalizedPlan, PlanSection
@@ -241,3 +242,212 @@ class TestMultiAgentOrchestratorFallback:
 
         # L'agent architecte devrait exister avec le fallback
         assert "architecte" in orch.agents
+
+
+# ── Phase 8 : Context Cache ──────────────────────────────────────────────
+
+
+class TestContextCacheInit:
+    """Phase 8 : intégration du Context Cache Gemini."""
+
+    def test_cache_id_none_by_default(self):
+        """Le cache_id est None si caching non configuré."""
+        state = make_state()
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+
+        assert orch._cache_id is None
+
+    def test_cache_not_initialized_without_google_provider(self):
+        """Le cache n'est pas initialisé si pas de provider Google."""
+        state = make_state()
+        state.config["gemini"] = {"caching_enabled": True}
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+
+        cache_id = orch._init_context_cache()
+        assert cache_id is None
+
+    def test_cache_not_initialized_when_disabled(self):
+        """Le cache n'est pas initialisé si caching_enabled=false."""
+        state = make_state()
+        state.config["gemini"] = {"caching_enabled": False}
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+
+        cache_id = orch._init_context_cache()
+        assert cache_id is None
+
+    def test_task_data_includes_cache_id(self):
+        """Vérifie que task_data contient cache_id (ou None) pour le Rédacteur."""
+        state = make_state()
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+        # cache_id doit être None car pas de provider Google
+        assert orch._cache_id is None
+
+
+# ── Phase 8 : HITL (workflow scindé) ─────────────────────────────────────
+
+
+class TestHITLWorkflow:
+    """Phase 8 : scission du workflow Architecte / Génération."""
+
+    def test_run_architect_phase_sets_status(self):
+        """run_architect_phase doit mettre le statut à waiting_for_architect_validation."""
+        state = make_state()
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+
+        # L'Architecte utilise le MockProvider qui ne retourne pas de structured_data,
+        # donc il devrait retourner l'architecture par défaut.
+        architecture = asyncio.run(orch.run_architect_phase())
+
+        assert architecture is not None
+        assert "sections" in architecture
+        assert "dependances" in architecture
+        assert state.current_step == "waiting_for_architect_validation"
+        assert state.agent_architecture is not None
+
+    def test_default_architecture_has_all_sections(self):
+        """L'architecture par défaut contient toutes les sections du plan."""
+        state = make_state(5)
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+
+        arch = orch._default_architecture()
+        assert len(arch["sections"]) == 5
+        assert len(arch["dependances"]) == 5
+
+
+# ── Phase 8 : Circuit Breaker ────────────────────────────────────────────
+
+
+class TestCircuitBreaker:
+    """Phase 8 : annulation en cascade via get_descendants."""
+
+    def test_cancel_descendants_populates_generated(self):
+        """_cancel_descendants marque les descendants comme annulés."""
+        state = make_state(3)
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+        # Simuler un DAG linéaire : s01 → s02 → s03
+        orch._dag = {"s01": [], "s02": ["s01"], "s03": ["s02"]}
+
+        completed = {"s01"}
+        generated = {"s01": "{{GENERATION_FAILED}}"}
+        cancelled = set()
+        pending_tasks = {}
+        in_progress = set()
+
+        orch._cancel_descendants(
+            "s01", completed, generated, cancelled, pending_tasks, in_progress,
+        )
+
+        # s02 et s03 doivent être annulés
+        assert "s02" in cancelled
+        assert "s03" in cancelled
+        assert "{{CANCELLED_DEPENDENCY_FAILED}}" in generated.get("s02", "")
+        assert "{{CANCELLED_DEPENDENCY_FAILED}}" in generated.get("s03", "")
+        # Les sections annulées doivent être dans completed
+        assert "s02" in completed
+        assert "s03" in completed
+
+    def test_cancel_descendants_publishes_alerts(self):
+        """Les alertes sont publiées sur le MessageBus pour chaque section annulée."""
+        state = make_state(3)
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+        orch._dag = {"s01": [], "s02": ["s01"], "s03": ["s01"]}
+
+        completed = {"s01"}
+        generated = {}
+        cancelled = set()
+
+        orch._cancel_descendants(
+            "s01", completed, generated, cancelled, {}, set(),
+        )
+
+        alerts = orch.bus.get_alerts()
+        # 2 alertes (s02 et s03)
+        assert len(alerts) == 2
+        alert_sids = {a.section_id for a in alerts}
+        assert alert_sids == {"s02", "s03"}
+
+    def test_circuit_breaker_does_not_affect_independent_sections(self):
+        """Les sections indépendantes ne sont pas touchées par le Circuit Breaker."""
+        state = make_state(4)
+        config = make_agent_config(state)
+        providers = {"mock": MockProvider()}
+
+        orch = MultiAgentOrchestrator(
+            project_state=state,
+            agent_config=config,
+            providers=providers,
+        )
+        # s01 → s02, s03 indépendant, s04 dépend de s03
+        orch._dag = {
+            "s01": [], "s02": ["s01"],
+            "s03": [], "s04": ["s03"],
+        }
+
+        completed = {"s01"}
+        generated = {}
+        cancelled = set()
+
+        orch._cancel_descendants(
+            "s01", completed, generated, cancelled, {}, set(),
+        )
+
+        # Seul s02 doit être annulé
+        assert "s02" in cancelled
+        assert "s03" not in cancelled
+        assert "s04" not in cancelled

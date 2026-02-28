@@ -204,19 +204,49 @@ class BaseAgent:
         self,
         prompt: str,
         system_prompt: str,
+        cache_id: Optional[str] = None,
     ) -> AIResponse:
-        """Appelle le provider via run_in_executor (le provider est synchrone)."""
+        """Appelle le provider via run_in_executor (le provider est synchrone).
+
+        Args:
+            prompt: Texte de l'invite utilisateur.
+            system_prompt: Instruction système.
+            cache_id: Identifiant du cache Gemini (Phase 8). Si fourni et que le
+                      provider supporte le caching, le corpus est lu depuis le
+                      cache au lieu d'être injecté dans le prompt.
+        """
         loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.provider.generate(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-            ),
+
+        # Phase 8 : si cache_id fourni et provider compatible, l'utiliser
+        use_cache = (
+            cache_id
+            and hasattr(self.provider, "supports_caching")
+            and self.provider.supports_caching(self.model)
         )
+
+        if use_cache:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.provider.generate(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    cached_content=cache_id,
+                ),
+            )
+        else:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.provider.generate(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                ),
+            )
         return response
 
     def _update_state(

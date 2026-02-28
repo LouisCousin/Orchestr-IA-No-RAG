@@ -345,9 +345,22 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Initialisation Phase 3 échouée : {e}")
 
+    def _is_rag_enabled(self) -> bool:
+        """Phase 8 (Kill Switch) : vérifie si le RAG est activé dans la config."""
+        return self.config.get("rag", {}).get("enabled", True)
+
     def _init_rag(self) -> None:
-        """Initialise le moteur RAG si nécessaire."""
+        """Initialise le moteur RAG si nécessaire.
+
+        Phase 8 (Kill Switch) : si ``rag.enabled`` est ``false``, aucun import
+        de ChromaDB/sentence-transformers n'est effectué. Les métadonnées
+        (titre, auteur, année) sont néanmoins extraites et stockées dans
+        SQLite pour le citation_engine.
+        """
         if self.rag_engine is not None:
+            return
+        if not self._is_rag_enabled():
+            logger.info("RAG désactivé (rag.enabled=false). ChromaDB non chargé.")
             return
         try:
             import chromadb  # noqa: F401 – check availability before creating engine
@@ -511,12 +524,20 @@ class Orchestrator:
     def index_corpus_rag(self) -> int:
         """Indexe le corpus dans ChromaDB avec chunking sémantique (Phase 2.5).
 
+        Phase 8 (Kill Switch) : si ``rag.enabled`` est ``false``, seules les
+        métadonnées (titre, auteur, année) sont extraites et stockées dans
+        SQLite. Aucun import de ChromaDB ni d'embeddings n'a lieu.
+
         Utilise le pipeline : ExtractionResult → semantic_chunker → index_corpus_semantic.
         Fallback sur l'ancien index_corpus() si semantic_chunker échoue.
 
         Returns:
-            Nombre de blocs indexés.
+            Nombre de blocs indexés (0 si RAG désactivé).
         """
+        # Phase 8 : si RAG désactivé, extraire uniquement les métadonnées
+        if not self._is_rag_enabled():
+            return self._index_metadata_only()
+
         self._init_rag()
         if not self.rag_engine or not self.state or not self.state.corpus:
             return 0
@@ -661,6 +682,82 @@ class Orchestrator:
         count = self.rag_engine.index_corpus(extractions)
         self.activity_log.info(f"Corpus indexé dans ChromaDB : {count} blocs")
         return count
+
+    def _index_metadata_only(self) -> int:
+        """Phase 8 (Kill Switch) : extrait les métadonnées sans charger ChromaDB.
+
+        Peuple le MetadataStore SQLite (titre, auteur, année, etc.) requis
+        par le citation_engine, sans importer chromadb, sentence-transformers
+        ou fastembed.
+
+        Returns:
+            0 (aucun bloc vectoriel indexé).
+        """
+        if not self.state or not self.state.corpus:
+            return 0
+
+        try:
+            from src.core.metadata_store import MetadataStore, DocumentMetadata
+        except ImportError:
+            logger.warning("MetadataStore non disponible, skip extraction métadonnées")
+            return 0
+
+        metadata_store = MetadataStore(str(self.project_dir))
+
+        for ext in self.state.corpus.extractions:
+            doc_id = (
+                ext.hash_binary
+                if ext.hash_binary
+                else f"{ext.source_filename}_{hash(ext.text[:50])}"
+            )
+
+            authors = None
+            year = None
+            if ext.metadata:
+                authors = ext.metadata.get("author") or ext.metadata.get("authors")
+                date_str = ext.metadata.get("creation_date") or ext.metadata.get("date")
+                if date_str:
+                    import re as _re
+                    year_match = _re.search(r'(19|20)\d{2}', str(date_str))
+                    if year_match:
+                        year = int(year_match.group())
+
+            title = ext.metadata.get("title") if ext.metadata else None
+            apa_reference = None
+            if authors and year:
+                apa_reference = f"{authors} ({year})"
+            elif authors and title:
+                apa_reference = f"{authors} — {title}"
+
+            doc_meta = DocumentMetadata(
+                doc_id=doc_id,
+                filepath=str(ext.source_filename),
+                filename=ext.source_filename,
+                title=title,
+                authors=json.dumps([authors]) if authors else None,
+                year=year,
+                apa_reference=apa_reference,
+                page_count=ext.page_count,
+                token_count=count_tokens(ext.text) if ext.text else ext.word_count,
+                char_count=ext.char_count,
+                word_count=ext.word_count,
+                extraction_method=ext.extraction_method,
+                extraction_status=ext.status,
+                hash_binary=ext.hash_binary,
+                hash_textual=ext.hash_text,
+            )
+            metadata_store.add_document(doc_meta)
+
+        self._metadata_store = metadata_store
+        if self._citation_engine:
+            self._citation_engine.metadata_store = metadata_store
+
+        logger.info(
+            f"RAG désactivé — métadonnées extraites pour "
+            f"{len(self.state.corpus.extractions)} document(s)"
+        )
+        self.activity_log.info("Métadonnées corpus extraites (RAG désactivé)")
+        return 0
 
     def generate_all_sections(self, pass_number: int = 1, progress_callback=None) -> dict:
         """Génère toutes les sections du plan séquentiellement.

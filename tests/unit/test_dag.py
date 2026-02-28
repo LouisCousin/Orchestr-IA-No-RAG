@@ -1,8 +1,8 @@
-"""Tests unitaires pour le DAG de dépendances (Phase 7)."""
+"""Tests unitaires pour le DAG de dépendances (Phase 7 + Phase 8 Circuit Breaker)."""
 
 import pytest
 
-from src.core.multi_agent_orchestrator import build_dag, get_ready_sections
+from src.core.multi_agent_orchestrator import build_dag, get_descendants, get_ready_sections
 
 
 class TestBuildDag:
@@ -126,3 +126,124 @@ class TestGetReadySections:
         # Étape 3 : s02 terminé → s03 débloqué
         ready = get_ready_sections(dag, completed={"s01", "s02"}, in_progress=set())
         assert ready == ["s03"]
+
+
+class TestGetDescendants:
+    """Phase 8 — Circuit Breaker : parcours du graphe pour annulation en cascade."""
+
+    def test_no_descendants(self):
+        """Un nœud feuille n'a aucun descendant."""
+        dag = {"s01": [], "s02": ["s01"], "s03": ["s02"]}
+        descendants = get_descendants(dag, "s03")
+        assert descendants == set()
+
+    def test_direct_descendants(self):
+        """Descendants directs d'un nœud racine."""
+        dag = {"s01": [], "s02": ["s01"], "s03": ["s01"]}
+        descendants = get_descendants(dag, "s01")
+        assert descendants == {"s02", "s03"}
+
+    def test_transitive_descendants(self):
+        """Descendants transitifs : s01 → s02 → s03."""
+        dag = {"s01": [], "s02": ["s01"], "s03": ["s02"]}
+        descendants = get_descendants(dag, "s01")
+        assert descendants == {"s02", "s03"}
+
+    def test_complex_dag(self):
+        """DAG complexe avec branches parallèles.
+
+        s01 ──┬── s03 ──┐
+              │          ├── s05
+        s02 ──┴── s04 ──┘
+        """
+        dag = {
+            "s01": [],
+            "s02": [],
+            "s03": ["s01"],
+            "s04": ["s01", "s02"],
+            "s05": ["s03", "s04"],
+        }
+        # Si s01 échoue, s03, s04 et s05 sont des descendants
+        descendants = get_descendants(dag, "s01")
+        assert descendants == {"s03", "s04", "s05"}
+
+        # Si s02 échoue, s04 et s05 sont des descendants
+        descendants = get_descendants(dag, "s02")
+        assert descendants == {"s04", "s05"}
+
+        # Si s03 échoue, seul s05 est descendant
+        descendants = get_descendants(dag, "s03")
+        assert descendants == {"s05"}
+
+    def test_empty_dag(self):
+        """DAG vide — aucun descendant."""
+        descendants = get_descendants({}, "s01")
+        assert descendants == set()
+
+    def test_single_node(self):
+        """Un seul nœud sans dépendances."""
+        dag = {"s01": []}
+        descendants = get_descendants(dag, "s01")
+        assert descendants == set()
+
+    def test_unknown_node(self):
+        """Nœud inconnu — aucun descendant (pas d'erreur)."""
+        dag = {"s01": [], "s02": ["s01"]}
+        descendants = get_descendants(dag, "s99")
+        assert descendants == set()
+
+    def test_diamond_dag(self):
+        """DAG en diamant : s01 → s02, s03 → s04.
+
+        s01 ──┬── s02 ──┐
+              │          ├── s04
+              └── s03 ──┘
+        """
+        dag = {
+            "s01": [],
+            "s02": ["s01"],
+            "s03": ["s01"],
+            "s04": ["s02", "s03"],
+        }
+        # Si s01 échoue, tout le reste est touché
+        descendants = get_descendants(dag, "s01")
+        assert descendants == {"s02", "s03", "s04"}
+
+        # Si s02 échoue, seul s04 est descendant
+        descendants = get_descendants(dag, "s02")
+        assert descendants == {"s04"}
+
+    def test_deep_chain(self):
+        """Chaîne profonde : s01 → s02 → s03 → s04 → s05."""
+        dag = {
+            "s01": [],
+            "s02": ["s01"],
+            "s03": ["s02"],
+            "s04": ["s03"],
+            "s05": ["s04"],
+        }
+        descendants = get_descendants(dag, "s01")
+        assert descendants == {"s02", "s03", "s04", "s05"}
+
+        descendants = get_descendants(dag, "s03")
+        assert descendants == {"s04", "s05"}
+
+    def test_no_api_calls_for_cancelled_sections(self):
+        """Critère d'acceptation : les sections filles ne doivent pas être lancées.
+
+        Vérifie que get_descendants identifie correctement toutes les sections
+        qui doivent être annulées, empêchant tout appel API.
+        """
+        # Scénario : section 1.0 échoue, 1.1 et 1.2 en dépendent
+        dag = {
+            "1.0": [],
+            "1.1": ["1.0"],
+            "1.2": ["1.0"],
+            "2.0": [],
+            "2.1": ["2.0"],
+        }
+        cancelled = get_descendants(dag, "1.0")
+        # Seules 1.1 et 1.2 doivent être annulées, pas 2.0 ni 2.1
+        assert cancelled == {"1.1", "1.2"}
+        assert "2.0" not in cancelled
+        assert "2.1" not in cancelled

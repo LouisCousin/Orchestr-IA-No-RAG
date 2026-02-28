@@ -547,7 +547,7 @@ def _render_mode_selector(state, provider):
 
 
 def _render_multi_agent_dashboard(state, provider):
-    """Phase 7 : Tableau de bord multi-agents et lancement."""
+    """Phase 7+8 : Tableau de bord multi-agents avec HITL après l'Architecte."""
     plan = state.plan
     config = state.config
     total_sections = len(plan.sections)
@@ -555,27 +555,135 @@ def _render_multi_agent_dashboard(state, provider):
 
     if already_generated >= total_sections and already_generated > 0:
         st.success("Toutes les sections ont été générées (multi-agents) !")
-
-        # Afficher le rapport post-génération
         _render_multi_agent_report(state)
 
         if st.button("Passer à l'export", type="primary", use_container_width=True):
             st.session_state.current_page = "export"
             st.rerun()
-    else:
-        st.markdown("### Pipeline multi-agents")
-        st.caption(
-            "Le mode multi-agents lance 5 agents spécialisés (Architecte, Rédacteur, "
-            "Vérificateur, Évaluateur, Correcteur) en parallèle pour générer, vérifier "
-            "et corriger automatiquement le document."
-        )
+        return
 
-        if st.button("Lancer la génération multi-agents", type="primary", use_container_width=True):
-            _run_multi_agent_generation(state, provider)
+    # Phase 8 HITL : si l'architecture est en attente de validation
+    current_step = getattr(state, "current_step", "")
+    if current_step == "waiting_for_architect_validation" and state.agent_architecture:
+        _render_architect_validation(state, provider)
+        return
+
+    # Lancement initial
+    st.markdown("### Pipeline multi-agents")
+    st.caption(
+        "Le mode multi-agents lance 5 agents spécialisés (Architecte, Rédacteur, "
+        "Vérificateur, Évaluateur, Correcteur) en parallèle pour générer, vérifier "
+        "et corriger automatiquement le document."
+    )
+
+    if st.button("Lancer l'Architecte (Phase 1)", type="primary", use_container_width=True):
+        _run_architect_only(state, provider)
 
 
-def _run_multi_agent_generation(state, provider):
-    """Exécute le pipeline multi-agents."""
+def _render_architect_validation(state, provider):
+    """Phase 8 HITL : affiche l'architecture pour validation/modification par l'utilisateur."""
+    st.markdown("### Validation de l'architecture")
+    st.info(
+        "L'Architecte a analysé le plan et proposé une organisation des sections "
+        "avec leurs dépendances. Vous pouvez modifier les titres, longueurs cibles "
+        "et dépendances avant de lancer la rédaction."
+    )
+
+    architecture = state.agent_architecture
+    sections = architecture.get("sections", [])
+    dependances = architecture.get("dependances", {})
+
+    # Afficher et permettre la modification de chaque section
+    modified_sections = []
+    for i, section in enumerate(sections):
+        sid = section.get("id", f"s{i:02d}")
+        with st.expander(f"{sid} — {section.get('title', 'Sans titre')}", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_title = st.text_input(
+                    "Titre", value=section.get("title", ""),
+                    key=f"hitl_title_{sid}",
+                )
+            with col2:
+                new_longueur = st.number_input(
+                    "Longueur cible (mots)", value=section.get("longueur_cible", 500),
+                    min_value=100, max_value=5000, step=100,
+                    key=f"hitl_longueur_{sid}",
+                )
+
+            # Dépendances modifiables
+            all_sids = [s.get("id", "") for s in sections if s.get("id") != sid]
+            current_deps = dependances.get(sid, [])
+            new_deps = st.multiselect(
+                "Dépendances (sections requises avant)",
+                options=all_sids,
+                default=[d for d in current_deps if d in all_sids],
+                key=f"hitl_deps_{sid}",
+            )
+
+            modified_sections.append({
+                **section,
+                "title": new_title,
+                "longueur_cible": new_longueur,
+                "_deps": new_deps,
+            })
+
+    # Zones de risque (lecture seule)
+    zones_risque = architecture.get("zones_risque", [])
+    if zones_risque:
+        with st.expander("Zones de risque identifiées"):
+            for zr in zones_risque:
+                st.text(f"  - {zr}")
+
+    # Boutons d'action
+    col_validate, col_cancel = st.columns(2)
+    with col_validate:
+        if st.button(
+            "Valider l'Architecture et Lancer la Rédaction",
+            type="primary", use_container_width=True,
+        ):
+            # Reconstruire l'architecture modifiée
+            new_dependances = {}
+            for ms in modified_sections:
+                sid = ms.get("id", "")
+                new_dependances[sid] = ms.pop("_deps", [])
+
+            modified_architecture = {
+                **architecture,
+                "sections": modified_sections,
+                "dependances": new_dependances,
+            }
+
+            state.agent_architecture = modified_architecture
+            state.current_step = "generation"
+            project_id = st.session_state.current_project
+            save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+
+            _run_generation_after_validation(state, provider, modified_architecture)
+
+    with col_cancel:
+        if st.button("Relancer l'Architecte", use_container_width=True):
+            state.current_step = "generation"
+            state.agent_architecture = None
+            project_id = st.session_state.current_project
+            save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+            st.rerun()
+
+
+def _build_providers_dict(provider):
+    """Construit le dictionnaire de providers pour le multi-agents."""
+    providers_dict = {}
+    if provider:
+        providers_dict[provider.name] = provider
+    for pname in ("openai", "anthropic", "google"):
+        p = st.session_state.get(f"provider_{pname}")
+        if p and pname not in providers_dict:
+            providers_dict[pname] = p
+    return providers_dict
+
+
+def _run_architect_only(state, provider):
+    """Phase 8 HITL : exécute uniquement la phase Architecte."""
     from src.core.agent_framework import AgentConfig
     from src.core.multi_agent_orchestrator import MultiAgentOrchestrator
 
@@ -583,30 +691,56 @@ def _run_multi_agent_generation(state, provider):
     project_dir = PROJECTS_DIR / project_id
     config = state.config
 
-    # Extraction du corpus si nécessaire
     if not state.corpus:
         corpus_dir = project_dir / "corpus"
         if corpus_dir.exists():
             extractor = CorpusExtractor()
             state.corpus = extractor.extract_corpus(corpus_dir)
 
-    # Préparer les providers
-    providers_dict = {}
-    if provider:
-        providers_dict[provider.name] = provider
-
-    # Ajouter les providers additionnels depuis la session
-    for pname in ("openai", "anthropic", "google"):
-        p = st.session_state.get(f"provider_{pname}")
-        if p and pname not in providers_dict:
-            providers_dict[pname] = p
-
+    providers_dict = _build_providers_dict(provider)
     agent_config = AgentConfig.from_config(config)
 
-    # Placeholder pour le dashboard temps réel
-    dashboard_placeholder = st.empty()
     status_text = st.empty()
-    progress_bar = st.progress(0, text="Initialisation du pipeline multi-agents...")
+    status_text.info("Phase Architecte en cours...")
+
+    orchestrator = MultiAgentOrchestrator(
+        project_state=state,
+        agent_config=agent_config,
+        providers=providers_dict,
+    )
+
+    # Stocker l'orchestrateur en session pour la phase 2
+    st.session_state["multi_agent_orchestrator"] = orchestrator
+
+    try:
+        architecture = asyncio.run(orchestrator.run_architect_phase())
+
+        state.agent_architecture = architecture
+        state.current_step = "waiting_for_architect_validation"
+        save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+
+        status_text.success("Architecture générée. Veuillez valider avant de continuer.")
+
+    except Exception as e:
+        logger.error(f"Erreur phase Architecte: {e}")
+        status_text.error(f"Erreur : {e}")
+
+    st.rerun()
+
+
+def _run_generation_after_validation(state, provider, architecture):
+    """Phase 8 HITL : exécute la génération après validation de l'architecture."""
+    from src.core.agent_framework import AgentConfig
+    from src.core.multi_agent_orchestrator import MultiAgentOrchestrator
+
+    project_id = st.session_state.current_project
+    config = state.config
+
+    providers_dict = _build_providers_dict(provider)
+    agent_config = AgentConfig.from_config(config)
+
+    status_text = st.empty()
+    progress_bar = st.progress(0, text="Initialisation de la génération...")
 
     def progress_callback(done, total, phase):
         if total > 0:
@@ -619,27 +753,22 @@ def _run_multi_agent_generation(state, provider):
         progress_callback=progress_callback,
     )
 
-    # Lancer le pipeline
-    status_text.info("Pipeline multi-agents en cours...")
+    status_text.info("Pipeline multi-agents en cours (rédaction, vérification, correction)...")
 
     try:
-        # Exécuter l'orchestrateur async
-        result = asyncio.run(orchestrator.run())
+        result = asyncio.run(orchestrator.run_generation_phase(architecture))
 
-        # Mettre à jour l'état
         state.generated_sections = result.sections
         state.agent_architecture = result.architecture
         state.agent_verif_reports = result.verif_reports
         state.agent_eval_result = result.eval_result
 
-        # Mettre à jour le statut des sections du plan
         if state.plan:
             for section in state.plan.sections:
                 if section.id in result.sections:
                     section.status = "generated"
                     section.generated_content = result.sections[section.id]
 
-        # Sauvegarder le rapport de coûts
         state.cost_report = {
             "total_input_tokens": sum(
                 v.get("input", 0) for v in result.token_breakdown.values()
@@ -659,7 +788,6 @@ def _run_multi_agent_generation(state, provider):
             f"Coût : ${result.total_cost_usd:.4f}"
         )
 
-        # Afficher les alertes
         for alert in result.alerts:
             st.warning(
                 f"Section \"{alert.get('section_id', '?')}\" — {alert.get('reason', 'Alerte')}"
