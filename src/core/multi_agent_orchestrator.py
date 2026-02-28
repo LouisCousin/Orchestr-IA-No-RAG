@@ -369,6 +369,15 @@ class MultiAgentOrchestrator:
 
         self._result.total_duration_ms = int((time.time() - self._start_time) * 1000)
         self._done = True
+        await self._emit_event({
+            "type": "generation_complete",
+            "cost": self._result.total_cost_usd,
+            "message": "Pipeline multi-agents terminé",
+            "data": {
+                "duration_ms": self._result.total_duration_ms,
+                "sections_count": len(self._result.sections),
+            },
+        })
         return self._result
 
     # ── HITL : workflow scindé ────────────────────────────────────────────
@@ -454,9 +463,22 @@ class MultiAgentOrchestrator:
         except Exception as e:
             logger.error(f"Erreur pipeline multi-agents: {e}")
             self._result.eval_result["error"] = str(e)
+            await self._emit_event({
+                "type": "dag_error",
+                "message": f"Erreur pipeline : {e}",
+            })
 
         self._result.total_duration_ms = int((time.time() - self._start_time) * 1000)
         self._done = True
+        await self._emit_event({
+            "type": "generation_complete",
+            "cost": self._result.total_cost_usd,
+            "message": "Pipeline multi-agents terminé (HITL)",
+            "data": {
+                "duration_ms": self._result.total_duration_ms,
+                "sections_count": len(self._result.sections),
+            },
+        })
         return self._result
 
     async def _run_architect(self) -> dict:
@@ -475,9 +497,17 @@ class MultiAgentOrchestrator:
         }
 
         self._log_timeline("architecte", "start", "Analyse du plan")
+        await self._emit_event({"type": "agent_start", "agent": "architecte", "message": "Analyse du plan"})
         result = await agent.run(task)
         self._log_timeline("architecte", "end", f"success={result.success}")
         self._track_cost(result, "architecte")
+        await self._emit_event({
+            "type": "agent_success" if result.success else "dag_error",
+            "agent": "architecte",
+            "cost": result.cost_usd,
+            "tokens": result.token_input + result.token_output,
+            "message": "Analyse terminée" if result.success else (result.error or "Erreur architecte"),
+        })
 
         if result.success and result.structured_data:
             architecture = result.structured_data
@@ -652,6 +682,16 @@ class MultiAgentOrchestrator:
                         len(completed), len(self._dag), "generation"
                     )
 
+                # Phase 3 Sprint 3 : émettre la progression
+                progress = len(completed) / max(len(self._dag), 1)
+                await self._emit_event({
+                    "type": "generation_progress",
+                    "progress": progress,
+                    "section": sid,
+                    "message": f"{len(completed)}/{len(self._dag)} sections",
+                    "cost": self._result.total_cost_usd,
+                })
+
         return generated
 
     def _cancel_descendants(
@@ -716,6 +756,18 @@ class MultiAgentOrchestrator:
                 "circuit_breaker", "cancelled",
                 f"{desc_sid} (dépend de {failed_sid})",
             )
+
+            # Émettre l'événement d'annulation via le bus (synchrone, pas d'await ici)
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self._emit_event({
+                    "type": "dag_error",
+                    "section": desc_sid,
+                    "agent": "circuit_breaker",
+                    "message": f"Annulé suite à l'échec de {failed_sid}",
+                }))
+            except RuntimeError:
+                pass
 
     # ── Batch API Mode (Sprint 2) ─────────────────────────────────────────
 
@@ -944,8 +996,22 @@ class MultiAgentOrchestrator:
                     error="Agent rédacteur non disponible",
                 )
             self._log_timeline("redacteur", "start", f"Section {section_id}")
+            await self._emit_event({
+                "type": "agent_start",
+                "section": section_id,
+                "agent": "writer",
+                "message": f"Rédaction de la section {section_id}",
+            })
             result = await agent.run(task)
             result.section_id = section_id
+            await self._emit_event({
+                "type": "agent_success" if result.success else "dag_error",
+                "section": section_id,
+                "agent": "writer",
+                "cost": result.cost_usd,
+                "tokens": result.token_input + result.token_output,
+                "message": f"Section {section_id} terminée" if result.success else (result.error or "Échec"),
+            })
             return section_id, result
 
     async def _run_verification_phase(
@@ -1159,6 +1225,15 @@ class MultiAgentOrchestrator:
             "elapsed_ms": int((time.time() - self._start_time) * 1000)
             if self._start_time else 0,
         })
+
+    # ── Phase 3 Sprint 3 : émission d'événements WebSocket ──────────────
+
+    async def _emit_event(self, event: dict) -> None:
+        """Émet un événement vers les clients WebSocket connectés."""
+        try:
+            await self.bus.emit_ws_event(event)
+        except Exception as exc:
+            logger.debug(f"Émission WS ignorée : {exc}")
 
     def estimate_pipeline_cost(
         self,
