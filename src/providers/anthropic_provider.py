@@ -195,7 +195,7 @@ class AnthropicProvider(BaseProvider):
                 msg = result.result
                 if hasattr(msg, "message") and msg.message:
                     content = ""
-                    for block in msg.message.content:
+                    for block in (msg.message.content or []):
                         if hasattr(block, "text"):
                             content += block.text
                     results[custom_id] = content

@@ -6,7 +6,6 @@ Phase 7 : vérifie la cohérence factuelle d'une section avec le corpus
 
 import json
 import logging
-import re
 
 from src.core.agent_framework import AgentResult, BaseAgent
 

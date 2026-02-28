@@ -6,7 +6,6 @@ Phase 7 : attribue un score de qualité global au document assemblé sur 6 crit�
 
 import json
 import logging
-import re
 
 from src.core.agent_framework import AgentResult, BaseAgent
 
@@ -124,7 +123,10 @@ class EvaluatorAgent(BaseAgent):
         for sid, report in verif_reports.items():
             verdict = report.get("verdict", "?")
             problems = report.get("problemes", [])
-            coherence = report.get("score_coherence", 0)
+            try:
+                coherence = float(report.get("score_coherence", 0))
+            except (TypeError, ValueError):
+                coherence = 0.0
             problem_types = [p.get("type", "?") for p in problems]
             parts.append(
                 f"[{sid}] verdict={verdict}, cohérence={coherence:.1f}, "
