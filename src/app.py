@@ -81,7 +81,8 @@ def render_sidebar():
                 label = page_label
 
             if is_disabled:
-                st.markdown(f"  {label}", help="Générez des sections avant d'accéder à l'export")
+                st.markdown(f"  {label}")
+                st.caption("Générez des sections avant d'accéder à l'export")
             elif st.button(label, key=f"nav_{page_id}", use_container_width=True):
                 # Persister l'état avant navigation
                 project_id = st.session_state.get("current_project")
