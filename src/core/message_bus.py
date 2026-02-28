@@ -34,7 +34,9 @@ class MessageBus:
         self._queues: dict[str, asyncio.Queue] = {}
         self._history: list[AgentMessage] = []
         self._sections: dict[str, str] = {}  # section_id -> contenu
-        self._lock: asyncio.Lock = asyncio.Lock()
+        # B01+B02: Use a single threading.Lock for all shared state access
+        # (compatible with both sync and async contexts). asyncio.Lock was
+        # problematic when instantiated outside an event loop.
         self._sync_lock: threading.Lock = threading.Lock()
         self._section_events: dict[str, asyncio.Event] = {}
         # Phase 3 Sprint 3 : listeners WebSocket
@@ -68,7 +70,7 @@ class MessageBus:
 
     async def store_section(self, section_id: str, content: str) -> None:
         """Stocke le contenu d'une section générée."""
-        async with self._lock:
+        with self._sync_lock:
             self._sections[section_id] = content
             if section_id in self._section_events:
                 self._section_events[section_id].set()
@@ -96,7 +98,7 @@ class MessageBus:
         timeout_s: int = 300,
     ) -> Optional[str]:
         """Attend la publication d'une section spécifique avec timeout."""
-        async with self._lock:
+        with self._sync_lock:
             if section_id in self._sections:
                 return self._sections[section_id]
 

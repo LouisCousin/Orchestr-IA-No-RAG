@@ -6,6 +6,13 @@ from unittest.mock import patch, MagicMock
 
 from src.core.corpus_acquirer import CorpusAcquirer, AcquisitionReport, AcquisitionStatus
 
+# B42: check if bs4 is available for HTML-related tests
+try:
+    import bs4 as _bs4  # noqa: F401
+    _has_bs4 = True
+except ImportError:
+    _has_bs4 = False
+
 
 @pytest.fixture
 def corpus_dir(tmp_path):
@@ -84,6 +91,7 @@ class TestAcquireURLs:
         report = acquirer.acquire_urls(["https://example.com/doc.pdf"])
         assert report.successful == 1
 
+    @pytest.mark.skipif(not _has_bs4, reason="beautifulsoup4 not installed")
     @patch("src.core.corpus_acquirer.CorpusAcquirer._get_session")
     def test_download_html_with_pdf_link(self, mock_session_fn, acquirer, corpus_dir):
         session = MagicMock()
@@ -112,6 +120,7 @@ class TestAcquireURLs:
         report = acquirer.acquire_urls(["https://example.com/page"])
         assert report.successful == 1
 
+    @pytest.mark.skipif(not _has_bs4, reason="beautifulsoup4 not installed")
     @patch("src.core.corpus_acquirer.CorpusAcquirer._get_session")
     def test_download_html_extract_text(self, mock_session_fn, acquirer, corpus_dir):
         session = MagicMock()

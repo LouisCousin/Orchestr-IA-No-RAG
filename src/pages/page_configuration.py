@@ -128,8 +128,12 @@ def _render_api_config():
             st.error("Veuillez saisir une clé API.")
             return
 
-        provider = create_provider(selected_provider, key)
-        if provider and provider.is_available():
+        try:
+            provider = create_provider(selected_provider, key)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        if provider.is_available():
             st.session_state.provider = provider
             st.session_state.cost_tracker = CostTracker()
             old_provider = config.get("default_provider")

@@ -3,6 +3,9 @@
 import pytest
 from pathlib import Path
 
+# B42: skip entire test module if python-docx or openpyxl are not installed
+pytest.importorskip("docx", reason="python-docx not installed")
+pytest.importorskip("openpyxl", reason="openpyxl not installed")
 from docx import Document
 
 from src.core.export_engine import ExportEngine, hex_to_rgb

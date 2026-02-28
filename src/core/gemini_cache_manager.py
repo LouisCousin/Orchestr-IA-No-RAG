@@ -14,6 +14,7 @@ Contraintes API (non contournables) :
 
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -48,12 +49,16 @@ class GeminiCacheManager:
     def __init__(self, api_key: Optional[str] = None):
         self._api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
         self._client = None
+        # B05: thread-safe client initialization
+        self._client_lock = threading.Lock()
 
     def _get_client(self):
-        """Initialise le client Google genai (lazy)."""
+        """Initialise le client Google genai (lazy, thread-safe)."""
         if self._client is None:
-            from google import genai
-            self._client = genai.Client(api_key=self._api_key)
+            with self._client_lock:
+                if self._client is None:
+                    from google import genai
+                    self._client = genai.Client(api_key=self._api_key)
         return self._client
 
     # ──────────────────────────────────────────────────────────────────────────

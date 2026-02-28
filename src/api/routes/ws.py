@@ -82,6 +82,9 @@ async def project_websocket(websocket: WebSocket, project_id: str):
     except Exception as exc:
         logger.warning(f"WS: erreur envoi état initial: {exc}")
 
+    # B22: track bus identity via unique id() to avoid reuse of memory address
+    bus_id = None
+
     # Créer le listener pour relayer les événements du bus
     async def ws_listener(event: dict) -> None:
         try:
@@ -93,6 +96,7 @@ async def project_websocket(websocket: WebSocket, project_id: str):
     bus = get_bus(project_id)
     if bus:
         bus.add_ws_listener(ws_listener)
+        bus_id = id(bus)
 
     try:
         while True:
@@ -120,15 +124,23 @@ async def project_websocket(websocket: WebSocket, project_id: str):
                     break
 
                 # Vérifier si un bus a été enregistré entre-temps
+                # B22: compare by id() to detect bus replacement even at same memory address
                 new_bus = get_bus(project_id)
-                if new_bus and new_bus is not bus:
+                if new_bus and id(new_bus) != bus_id:
                     if bus:
                         bus.remove_ws_listener(ws_listener)
                     bus = new_bus
+                    bus_id = id(bus)
                     bus.add_ws_listener(ws_listener)
+
+            # B23: let CancelledError propagate for clean shutdown (Python <3.9 compat)
+            except asyncio.CancelledError:
+                raise
 
     except WebSocketDisconnect:
         logger.info(f"WS déconnecté : projet {project_id}")
+    except asyncio.CancelledError:
+        logger.info(f"WS annulé : projet {project_id}")
     except Exception as exc:
         logger.warning(f"WS erreur : {exc}")
     finally:

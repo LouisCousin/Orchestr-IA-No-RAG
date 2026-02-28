@@ -255,10 +255,13 @@ class CostTracker:
 
         threshold = pricing.get("long_context_threshold", float("inf"))
         if total_input_tokens > threshold:
+            # B29: use dynamic pricing from config instead of hardcoded values
+            lc_input = pricing.get("long_context_input", pricing.get("input", "?"))
+            lc_output = pricing.get("long_context_output", pricing.get("output", "?"))
             logger.warning(
                 f"⚠️ Seuil long-context dépassé pour {model} : "
                 f"{total_input_tokens} > {threshold} tokens. "
-                f"Tarif long-context appliqué ($4/1M input, $18/1M output)."
+                f"Tarif long-context appliqué (${lc_input}/1M input, ${lc_output}/1M output)."
             )
             return True
         return False

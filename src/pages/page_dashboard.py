@@ -123,7 +123,9 @@ def render():
             for sid, report in quality_reports.items():
                 row = {"Section": sid, "Score global": report.get("global_score", 0)}
                 for criterion in report.get("criteria", []):
-                    row[criterion.get("name", criterion.get("id", ""))] = criterion.get("score", 0)
+                    # B13: fallback to "unknown" if both name and id are None
+                    crit_key = criterion.get("name") or criterion.get("id") or "unknown"
+                    row[crit_key] = criterion.get("score", 0)
                 row["{{NEEDS_SOURCE}}"] = report.get("needs_source_count", 0)
                 quality_data.append(row)
 

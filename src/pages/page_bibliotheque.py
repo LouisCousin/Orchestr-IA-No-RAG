@@ -22,6 +22,10 @@ def render():
     st.title("Bibliothèque de templates")
     st.markdown("Gérez vos templates de prompts réutilisables entre projets.")
 
+    # B12: initialize session state key before access
+    if "selected_template_id" not in st.session_state:
+        st.session_state.selected_template_id = None
+
     library = _get_library()
 
     # Layout : colonne gauche (liste) + colonne droite (détail)

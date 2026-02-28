@@ -196,9 +196,14 @@ def _render_launch_and_progress(state, provider):
 
     if corpus_dir.exists() and any(corpus_dir.iterdir()):
         if not state.corpus:
-            extractor = CorpusExtractor()
-            corpus = extractor.extract_corpus(corpus_dir)
-            state.corpus = corpus
+            try:
+                extractor = CorpusExtractor()
+                corpus = extractor.extract_corpus(corpus_dir)
+                state.corpus = corpus
+            except Exception as extract_err:
+                # B14: warn user on corpus extraction failure instead of silent continue
+                st.warning(f"Extraction du corpus échouée : {extract_err}")
+                logger.warning(f"Corpus extraction failed: {extract_err}")
         if state.corpus and state.corpus.total_chunks > 0:
             avg_corpus_tokens = state.corpus.total_tokens // max(1, total_sections)
 
@@ -434,6 +439,9 @@ def _run_generation(state, provider, tracker):
                         )
                     except Exception:
                         summary = response.content[:200] + "..."
+                    # B41: defensive init in case section_summaries is None after disk load
+                    if state.section_summaries is None:
+                        state.section_summaries = []
                     state.section_summaries.append(f"[{section.id}] {section.title}: {summary}")
 
                 task_label = "raffinée" if is_refinement else "générée"

@@ -82,6 +82,15 @@ class TestExtractTextFile:
         assert "non supporté" in result.error_message
 
 
+# B42: check if optional dependencies are available
+try:
+    import bs4 as _bs4  # noqa: F401
+    _has_bs4 = True
+except ImportError:
+    _has_bs4 = False
+
+
+@pytest.mark.skipif(not _has_bs4, reason="beautifulsoup4 not installed")
 class TestExtractHTML:
     def test_extract_html_file(self, tmp_html_file):
         result = extract(tmp_html_file)
