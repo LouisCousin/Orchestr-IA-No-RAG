@@ -1,10 +1,10 @@
 """Gestion des checkpoints HITL (Human-In-The-Loop)."""
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, fields as dc_fields
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Optional, Union
+from typing import Optional, Union
 
 logger = logging.getLogger("orchestria")
 
@@ -59,7 +59,8 @@ class CheckpointConfig:
 
     @classmethod
     def from_dict(cls, data: dict) -> "CheckpointConfig":
-        return cls(**{k: v for k, v in data.items() if hasattr(cls, k)})
+        field_names = {f.name for f in dc_fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in field_names})
 
 
 class CheckpointManager:

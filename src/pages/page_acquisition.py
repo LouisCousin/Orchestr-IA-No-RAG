@@ -284,14 +284,6 @@ def _render_github_acquisition():
 
     st.markdown(f"**Estimation corpus :** ~{est_tokens:,} tokens sur {token_budget:,} budget ({budget_pct}%)")
 
-    # Jauge colorée
-    if budget_pct < 60:
-        bar_color = "normal"
-    elif budget_pct < 85:
-        bar_color = "normal"   # Streamlit ne supporte pas la couleur custom sur progress, on utilise le texte
-    else:
-        bar_color = "normal"
-
     st.progress(min(budget_pct / 100, 1.0))
 
     if budget_pct >= 85:
@@ -392,9 +384,16 @@ def _render_github_acquisition():
     # Stocker dans l'état du projet
     state = st.session_state.project_state
     if state:
-        # Fusion avec corpus existant
-        existing = getattr(state, "corpus_text", None) or ""
-        state.corpus_text = (existing + "\n\n" + full_corpus).strip() if existing else full_corpus
+        # Sauvegarder le corpus GitHub comme fichier dans le répertoire corpus
+        # afin que le CorpusExtractor puisse le traiter normalement
+        project_id = st.session_state.current_project
+        if project_id:
+            gh_corpus_dir = PROJECTS_DIR / project_id / "corpus"
+            ensure_dir(gh_corpus_dir)
+            github_corpus_filename = sanitize_filename(f"github_{owner}_{repo}.md")
+            github_corpus_path = gh_corpus_dir / github_corpus_filename
+            github_corpus_path.write_text(full_corpus, encoding="utf-8")
+
         state.github_repo_url = f"https://github.com/{owner}/{repo}"
         state.github_branch = branch
         state.github_file_count = len(selected_files) - skipped
@@ -402,7 +401,6 @@ def _render_github_acquisition():
         state.github_acquired_at = datetime.now().isoformat()
 
         # Sauvegarder
-        project_id = st.session_state.current_project
         if project_id:
             save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
 

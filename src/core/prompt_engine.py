@@ -218,7 +218,7 @@ class PromptEngine:
 
         # Instruction de longueur
         if section.page_budget:
-            length_instruction = f"Environ {section.page_budget} page(s) ({int(section.page_budget * 400)} tokens approximativement)."
+            length_instruction = f"Environ {section.page_budget} page(s) ({int(section.page_budget * 400)} mots approximativement)."
         elif target_pages:
             length_instruction = f"Ajuste la longueur proportionnellement à la taille cible du document ({target_pages} pages)."
         else:
@@ -274,7 +274,7 @@ class PromptEngine:
             description = f"Description : {section.description}"
 
         if section.page_budget:
-            length_instruction = f"Environ {section.page_budget} page(s) ({int(section.page_budget * 400)} tokens approximativement)."
+            length_instruction = f"Environ {section.page_budget} page(s) ({int(section.page_budget * 400)} mots approximativement)."
         elif target_pages:
             length_instruction = f"Ajuste la longueur proportionnellement à la taille cible du document ({target_pages} pages)."
         else:

@@ -1,7 +1,6 @@
 """Validation du contenu web acquis (détection de pages anti-bot)."""
 
 import re
-from typing import Optional
 
 
 # Mots-clés indicateurs de pages anti-bot (insensible à la casse)

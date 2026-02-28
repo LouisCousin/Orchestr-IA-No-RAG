@@ -1,7 +1,5 @@
 """Comptage de tokens pour l'estimation des coûts."""
 
-from typing import Optional
-
 
 def count_tokens(text: str, model: str = "gpt-4o") -> int:
     """Compte le nombre de tokens d'un texte pour un modèle donné.

@@ -219,7 +219,7 @@ def render():
 
     st.divider()
 
-    # ── Section E : Activité et audit ──
+    # ── Section F : Activité et audit ──
     st.header("Activité et audit")
     activity_log = st.session_state.get("activity_log")
     if activity_log:

@@ -9,7 +9,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Optional
 
 from src.providers.base import AIResponse, BaseProvider
 

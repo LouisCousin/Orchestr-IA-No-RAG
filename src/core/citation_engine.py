@@ -206,6 +206,11 @@ class CitationEngine:
             pages_range=get("pages_range", None),
             doi=get("doi", None),
             publisher=get("publisher", None),
+            url=get("url", None),
+            university=get("university", None),
+            site_name=get("site_name", None),
+            editor=get("editor", None),
+            book_title=get("book_title", None),
         )
 
     # ── Parsing des citations inline ──
