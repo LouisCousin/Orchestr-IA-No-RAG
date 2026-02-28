@@ -568,6 +568,11 @@ def _render_multi_agent_dashboard(state, provider):
         _render_architect_validation(state, provider)
         return
 
+    # Phase 2 Sprint 2 : si un batch est en cours
+    if current_step == "waiting_for_batch" and getattr(state, "batch_id", None):
+        _render_batch_polling(state, provider)
+        return
+
     # Lancement initial
     st.markdown("### Pipeline multi-agents")
     st.caption(
@@ -667,6 +672,78 @@ def _render_architect_validation(state, provider):
             state.agent_architecture = None
             project_id = st.session_state.current_project
             save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+            st.rerun()
+
+
+def _render_batch_polling(state, provider):
+    """Interface pour vérifier l'état d'un batch OpenAI/Anthropic en cours."""
+    st.markdown("### ⏳ Génération en mode Batch")
+    st.info(
+        "Un lot de requêtes a été soumis au fournisseur pour réduire les coûts de 50%. "
+        "Le traitement se fait en arrière-plan (cela peut prendre de quelques minutes à 24h)."
+    )
+
+    batch_id = state.batch_id
+    st.code(f"ID du Batch : {batch_id}", language=None)
+
+    # Trouver le bon provider
+    batch_provider = None
+    for p_name in ("openai", "anthropic"):
+        p = st.session_state.get(f"provider_{p_name}")
+        if p and hasattr(p, "poll_batch"):
+            batch_provider = p
+            break
+
+    if not batch_provider:
+        st.error("Aucun provider supportant le mode Batch n'est configuré.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Vérifier le statut du Batch", type="primary", use_container_width=True):
+            with st.spinner("Interrogation de l'API..."):
+                try:
+                    status = batch_provider.poll_batch(batch_id)
+                    st.toast(f"Statut actuel : {status.status.value}")
+
+                    if status.status.value == "completed":
+                        st.success("Batch terminé ! Récupération des résultats...")
+                        results = batch_provider.retrieve_batch_results(batch_id)
+
+                        # Reprendre l'orchestrateur
+                        from src.core.agent_framework import AgentConfig
+                        from src.core.multi_agent_orchestrator import MultiAgentOrchestrator
+                        orch = MultiAgentOrchestrator(
+                            project_state=state,
+                            agent_config=AgentConfig.from_config(state.config),
+                            providers={batch_provider.name: batch_provider}
+                        )
+                        # Relancer la suite du DAG
+                        asyncio.run(orch.resume_from_batch(results))
+
+                        # Sauvegarder et rafraîchir
+                        project_id = st.session_state.current_project
+                        save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
+                        st.rerun()
+
+                    elif status.status.value in ["failed", "expired", "cancelled"]:
+                        st.error(f"Le batch a échoué ou a été annulé ({status.error_message}).")
+                        if st.button("Annuler le mode Batch et reprendre en manuel"):
+                            state.current_step = "generation"
+                            state.batch_id = None
+                            save_json(PROJECTS_DIR / st.session_state.current_project / "state.json", state.to_dict())
+                            st.rerun()
+                    else:
+                        st.info(f"Progression : {status.completed} terminées / {status.total} requêtes.")
+
+                except Exception as e:
+                    st.error(f"Erreur lors de la vérification : {e}")
+
+    with col2:
+        if st.button("Annuler et forcer la reprise", use_container_width=True):
+            state.current_step = "generation"
+            state.batch_id = None
+            save_json(PROJECTS_DIR / st.session_state.current_project / "state.json", state.to_dict())
             st.rerun()
 
 
