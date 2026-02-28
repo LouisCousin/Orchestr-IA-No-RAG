@@ -33,7 +33,7 @@ from src.core.agents.writer_agent import WriterAgent
 from src.core.cost_tracker import CostTracker
 from src.core.message_bus import MessageBus
 from src.core.tool_dispatcher import ToolDispatcher
-from src.providers.base import BaseProvider
+from src.providers.base import BaseProvider, BatchRequest
 
 logger = logging.getLogger("orchestria")
 
@@ -516,15 +516,25 @@ class MultiAgentOrchestrator:
     async def _run_generation_phase(self, architecture: dict) -> dict[str, str]:
         """Lance les Rédacteurs en respectant le DAG de dépendances.
 
-        Utilise asyncio.create_task pour un vrai streaming DAG : dès qu'une
-        section se termine, les sections dépendantes deviennent immédiatement
-        éligibles au lancement, sans attendre la fin du batch courant.
+        Si ``use_batch_api`` est activé dans la config, les sections
+        indépendantes au même niveau du DAG sont regroupées dans un lot
+        unique soumis à l'API Batch du provider (coût réduit de 50%).
+        L'orchestrateur s'arrête alors avec un statut ``waiting_for_batch``.
+
+        Sinon, utilise asyncio.create_task pour un vrai streaming DAG : dès
+        qu'une section se termine, les sections dépendantes deviennent
+        immédiatement éligibles au lancement, sans attendre la fin du batch
+        courant.
 
         Phase 8 (v3.0) :
           - Injection de cache_id (Gemini) au lieu de corpus_text si disponible.
           - Circuit Breaker : en cas d'échec d'une section, tous les descendants
             dans le DAG sont annulés en cascade (pas d'appel API).
         """
+        # ── Mode Batch API (Sprint 2) ──
+        if self.config.use_batch_api:
+            return await self._run_generation_phase_batch(architecture)
+
         sections_data = {s["id"]: s for s in architecture.get("sections", [])}
         system_prompt_global = architecture.get("system_prompt_global", "")
 
@@ -706,6 +716,219 @@ class MultiAgentOrchestrator:
                 "circuit_breaker", "cancelled",
                 f"{desc_sid} (dépend de {failed_sid})",
             )
+
+    # ── Batch API Mode (Sprint 2) ─────────────────────────────────────────
+
+    async def _run_generation_phase_batch(self, architecture: dict) -> dict[str, str]:
+        """Mode Batch API : soumet les sections par niveaux du DAG.
+
+        Pour chaque « vague » de sections prêtes (sans dépendances en attente),
+        construit un lot BatchRequest et le soumet via le provider. Le statut
+        du projet passe à ``waiting_for_batch`` et l'orchestrateur s'arrête.
+
+        La reprise se fait via ``resume_from_batch(batch_results)``.
+
+        Returns:
+            dict partiel des sections déjà générées (vide au premier lancement,
+            complet si reprise batch terminée).
+        """
+        sections_data = {s["id"]: s for s in architecture.get("sections", [])}
+        system_prompt_global = architecture.get("system_prompt_global", "")
+        corpus_text = self._get_corpus_text() if not self._cache_id else ""
+
+        completed: set[str] = set()
+        generated: dict[str, str] = {}
+        section_summaries: dict[str, str] = {}
+
+        # Restaurer l'avancement depuis un batch précédent
+        if hasattr(self.state, "batch_generated") and self.state.batch_generated:
+            generated.update(self.state.batch_generated)
+            completed.update(generated.keys())
+            for sid, content in generated.items():
+                section_summaries[sid] = content[:500]
+
+        while len(completed) < len(self._dag):
+            ready = get_ready_sections(self._dag, completed, set())
+
+            if not ready:
+                remaining = set(self._dag.keys()) - completed
+                logger.warning(f"Batch mode : sections bloquées : {remaining}")
+                break
+
+            # Construire les BatchRequest pour toutes les sections prêtes
+            batch_requests: list[BatchRequest] = []
+            for sid in ready:
+                section_info = sections_data.get(sid, {"id": sid, "title": sid})
+
+                prereqs = {}
+                for dep_id in self._dag.get(sid, []):
+                    if dep_id in section_summaries:
+                        prereqs[dep_id] = section_summaries[dep_id]
+                    elif dep_id in generated:
+                        prereqs[dep_id] = generated[dep_id][:500]
+
+                prompt = self._build_writer_prompt(
+                    sid, section_info, corpus_text, system_prompt_global, prereqs,
+                )
+
+                writer_cfg = self.config.get_agent_config("redacteur")
+                batch_requests.append(BatchRequest(
+                    custom_id=sid,
+                    prompt=prompt,
+                    system_prompt=system_prompt_global,
+                    model=writer_cfg.get("model", "gpt-4.1"),
+                    temperature=writer_cfg.get("temperature", 0.7),
+                    max_tokens=writer_cfg.get("max_tokens", 4096),
+                ))
+
+            # Trouver un provider capable de batch
+            batch_provider = self._get_batch_provider()
+            if not batch_provider:
+                logger.warning("Aucun provider ne supporte le batch, fallback temps réel")
+                # Fallback : exécution classique pour cette vague
+                for sid in ready:
+                    section_info = sections_data.get(sid, {"id": sid, "title": sid})
+                    prereqs = {}
+                    for dep_id in self._dag.get(sid, []):
+                        if dep_id in section_summaries:
+                            prereqs[dep_id] = section_summaries[dep_id]
+                    task_data = {
+                        "section_id": sid,
+                        "section_title": section_info.get("title", sid),
+                        "section_type": section_info.get("type", "fond"),
+                        "section_ton": section_info.get("ton", "analytique"),
+                        "longueur_cible": section_info.get("longueur_cible", 500),
+                        "corpus_text": corpus_text,
+                        "cache_id": self._cache_id,
+                        "system_prompt_global": system_prompt_global,
+                        "prerequisite_sections": prereqs,
+                        "description": f"Rédaction {sid}",
+                    }
+                    _, result = await self._execute_writer(sid, task_data)
+                    if result.success and result.content:
+                        generated[sid] = result.content
+                        section_summaries[sid] = result.content[:500]
+                    completed.add(sid)
+                continue
+
+            # Soumettre le lot
+            logger.info(
+                f"Batch API : soumission de {len(batch_requests)} sections "
+                f"({[r.custom_id for r in batch_requests]})"
+            )
+            batch_id = batch_provider.submit_batch(batch_requests)
+
+            # Mettre en pause : enregistrer l'état pour reprise ultérieure
+            if hasattr(self.state, "current_step"):
+                self.state.current_step = "waiting_for_batch"
+            if hasattr(self.state, "batch_id"):
+                self.state.batch_id = batch_id
+            else:
+                # Stocker dynamiquement si l'attribut n'existe pas encore
+                self.state.batch_id = batch_id
+            # Persister les sections déjà générées
+            self.state.batch_generated = dict(generated)
+            self.state.batch_architecture = architecture
+
+            self._log_timeline(
+                "batch_api", "submitted",
+                f"batch_id={batch_id}, sections={[r.custom_id for r in batch_requests]}",
+            )
+
+            # Retourner ce qu'on a pour l'instant — le pipeline s'arrête ici
+            return generated
+
+        return generated
+
+    def _build_writer_prompt(
+        self,
+        sid: str,
+        section_info: dict,
+        corpus_text: str,
+        system_prompt_global: str,
+        prereqs: dict,
+    ) -> str:
+        """Construit le prompt de rédaction pour une section (mode batch)."""
+        title = section_info.get("title", sid)
+        section_type = section_info.get("type", "fond")
+        ton = section_info.get("ton", "analytique")
+        longueur = section_info.get("longueur_cible", 500)
+
+        prompt_parts = [
+            f"Rédige la section '{title}' (ID: {sid}).",
+            f"Type : {section_type}, Ton : {ton}, Longueur cible : ~{longueur} mots.",
+        ]
+        if corpus_text:
+            prompt_parts.append(f"\n--- CORPUS DE RÉFÉRENCE ---\n{corpus_text[:8000]}\n---")
+        if prereqs:
+            prereq_text = "\n".join(
+                f"[{dep_id}]: {summary}" for dep_id, summary in prereqs.items()
+            )
+            prompt_parts.append(f"\n--- SECTIONS PRÉREQUISES ---\n{prereq_text}\n---")
+
+        return "\n".join(prompt_parts)
+
+    def _get_batch_provider(self) -> Optional[BaseProvider]:
+        """Retourne le premier provider disponible supportant le batch."""
+        # Privilégier le provider du rédacteur
+        writer_cfg = self.config.get_agent_config("redacteur")
+        writer_provider_name = writer_cfg.get("provider", "openai")
+        writer_provider = self.providers.get(writer_provider_name)
+        if writer_provider and hasattr(writer_provider, "supports_batch") and writer_provider.supports_batch():
+            return writer_provider
+        # Fallback : chercher un provider qui supporte le batch
+        for provider in self.providers.values():
+            if hasattr(provider, "supports_batch") and provider.supports_batch():
+                return provider
+        return None
+
+    async def resume_from_batch(
+        self,
+        batch_results: dict[str, str],
+        architecture: Optional[dict] = None,
+    ) -> dict[str, str]:
+        """Reprend la génération après la complétion d'un batch.
+
+        Intègre les résultats du batch dans ``generated``, puis relance
+        ``_run_generation_phase()`` pour débloquer les sections suivantes
+        du DAG.
+
+        Args:
+            batch_results: Dict {section_id: contenu_généré} du batch terminé.
+            architecture: Architecture du pipeline (si None, utilise celle en cache).
+
+        Returns:
+            Dict complet de toutes les sections générées.
+        """
+        if architecture is None:
+            architecture = getattr(self.state, "batch_architecture", self._result.architecture)
+
+        # Re-valider le DAG
+        dependances = architecture.get("dependances", {})
+        try:
+            self._dag = build_dag(dependances)
+        except ValueError as e:
+            logger.error(str(e))
+            self._dag = {sid: [] for sid in dependances}
+
+        # Intégrer les résultats du batch
+        existing = getattr(self.state, "batch_generated", {}) or {}
+        existing.update(batch_results)
+        self.state.batch_generated = existing
+
+        # Stocker dans le bus
+        for sid, content in batch_results.items():
+            await self.bus.store_section(sid, content)
+            self._log_timeline("batch_api", "result_received", f"{sid}")
+
+        # Nettoyer l'état batch
+        if hasattr(self.state, "current_step"):
+            self.state.current_step = "generation"
+        if hasattr(self.state, "batch_id"):
+            self.state.batch_id = None
+
+        # Relancer la phase de génération (les sections déjà générées seront skippées)
+        return await self._run_generation_phase(architecture)
 
     async def _execute_writer(
         self, section_id: str, task: dict

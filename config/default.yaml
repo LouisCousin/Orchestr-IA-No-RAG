@@ -81,6 +81,8 @@ pdf_extraction:
   disable_page_images: true          # Désactiver la génération d'images de pages
   disable_picture_classification: true  # Désactiver la classification d'images
   disable_ocr: true                  # Désactiver l'OCR (inutile pour les PDF numériques)
+  docling_max_file_size_mb: 50       # Poids max (Mo) avant bypass Docling → pymupdf
+  docling_timeout_seconds: 180       # Timeout extraction Docling (secondes)
 
 # ═══════════════════════════════════════════
 # Phase 2.5 — Pipeline RAG complet
@@ -194,6 +196,8 @@ grobid:
   timeout_seconds: 30
   consolidate_header: true
   batch_size: 5
+  fallback_llm: true                   # Utiliser un LLM pour l'extraction de métadonnées si GROBID indisponible
+  llm_model: "gpt-4o-mini"            # Modèle LLM pour le fallback métadonnées
 
 # ── Personas ──
 personas:
@@ -238,6 +242,7 @@ gemini:
 
 multi_agent:
   enabled: false                   # Désactivé par défaut, activable en UI
+  use_batch_api: false             # Mode batch API (-50% coût, délai async jusqu'à 24h)
 
   # Parallélisme
   max_parallel_writers: 4          # Rédacteurs simultanés max

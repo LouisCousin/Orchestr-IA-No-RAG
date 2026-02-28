@@ -67,6 +67,10 @@ class ProjectState:
     agent_architecture: Optional[dict] = None               # Résultat de l'Architecte
     agent_verif_reports: Optional[dict] = None              # Rapports de vérification
     agent_eval_result: Optional[dict] = None                # Score et métriques évaluateur
+    # Phase 2 Sprint 2 — Batch API
+    batch_id: Optional[str] = None                           # ID du batch en cours
+    batch_generated: dict = field(default_factory=dict)      # Sections déjà générées par batch
+    batch_architecture: Optional[dict] = None                # Architecture sauvegardée pour reprise
     created_at: str = ""
     updated_at: str = ""
 
@@ -114,6 +118,9 @@ class ProjectState:
             "agent_architecture": self.agent_architecture,
             "agent_verif_reports": self.agent_verif_reports,
             "agent_eval_result": self.agent_eval_result,
+            "batch_id": self.batch_id,
+            "batch_generated": self.batch_generated,
+            "batch_architecture": self.batch_architecture,
             "created_at": self.created_at,
             "updated_at": datetime.now().isoformat(),
         }
@@ -148,6 +155,9 @@ class ProjectState:
             agent_architecture=data.get("agent_architecture"),
             agent_verif_reports=data.get("agent_verif_reports"),
             agent_eval_result=data.get("agent_eval_result"),
+            batch_id=data.get("batch_id"),
+            batch_generated=data.get("batch_generated", {}),
+            batch_architecture=data.get("batch_architecture"),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at", ""),
         )
@@ -186,6 +196,141 @@ def _normalize_config(config: dict) -> dict:
                 config[flat_key] = nested[key]
 
     return config
+
+
+def _extract_metadata_via_llm(
+    ext,
+    project_dir: Path,
+    provider,
+    llm_model: str = "gpt-4o-mini",
+) -> dict | None:
+    """Extrait les métadonnées bibliographiques d'un PDF via un LLM (alternative à GROBID).
+
+    Extrait le texte des 2 premières pages via pymupdf, puis envoie un prompt
+    au LLM en forçant le format JSON pour obtenir titre, auteurs, année, DOI.
+
+    Args:
+        ext: ExtractionResult du document.
+        project_dir: Répertoire du projet (pour retrouver le fichier PDF).
+        provider: Instance de BaseProvider (doit supporter generate ou generate_json).
+        llm_model: Modèle LLM à utiliser.
+
+    Returns:
+        Dict avec les clés extraites (title, authors, year, doi), ou None si échec.
+    """
+    # Extraire le texte des 2 premières pages
+    first_pages_text = _extract_first_pages(ext, project_dir, max_pages=2)
+    if not first_pages_text or len(first_pages_text.strip()) < 20:
+        return None
+
+    system_prompt = (
+        "Tu es un assistant spécialisé dans l'extraction de métadonnées bibliographiques. "
+        "Tu dois extraire les informations suivantes depuis le texte des premières pages "
+        "d'un article ou document académique. Réponds UNIQUEMENT en JSON valide."
+    )
+    user_prompt = (
+        "Extrais les métadonnées bibliographiques du texte suivant et retourne-les "
+        "au format JSON strict avec les clés : title, authors (liste de chaînes), "
+        "year (entier ou null), doi (chaîne ou null).\n\n"
+        "Si une information est introuvable, utilise null pour les scalaires "
+        "et une liste vide [] pour authors.\n\n"
+        f"--- TEXTE DES PREMIÈRES PAGES ---\n{first_pages_text[:4000]}\n"
+        "--- FIN DU TEXTE ---\n\n"
+        'Réponds en JSON : {"title": "...", "authors": ["..."], "year": 1234, "doi": "..."}'
+    )
+
+    try:
+        # Utiliser generate_json si disponible (OpenAI), sinon generate classique
+        if hasattr(provider, "generate_json"):
+            response = provider.generate_json(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=llm_model,
+                temperature=0.1,
+                max_tokens=512,
+            )
+        else:
+            response = provider.generate(
+                prompt=user_prompt,
+                system_prompt=system_prompt,
+                model=llm_model,
+                temperature=0.1,
+                max_tokens=512,
+            )
+
+        # Parser le JSON retourné
+        content = response.content.strip()
+        meta = json.loads(content)
+
+        result = {}
+        if meta.get("title"):
+            result["title"] = str(meta["title"])
+        if meta.get("authors"):
+            authors = meta["authors"]
+            if isinstance(authors, list):
+                result["authors"] = authors
+                result["author"] = ", ".join(str(a) for a in authors)
+            elif isinstance(authors, str):
+                result["authors"] = [authors]
+                result["author"] = authors
+        if meta.get("year") is not None:
+            try:
+                result["year"] = int(meta["year"])
+                result["date"] = str(meta["year"])
+            except (ValueError, TypeError):
+                pass
+        if meta.get("doi"):
+            result["doi"] = str(meta["doi"])
+
+        return result if result else None
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"LLM fallback : JSON invalide retourné : {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"LLM fallback : erreur lors de l'appel LLM : {e}")
+        return None
+
+
+def _extract_first_pages(ext, project_dir: Path, max_pages: int = 2) -> str | None:
+    """Extrait le texte des premières pages d'un PDF via pymupdf.
+
+    Args:
+        ext: ExtractionResult du document.
+        project_dir: Répertoire du projet.
+        max_pages: Nombre de pages à extraire.
+
+    Returns:
+        Texte des premières pages, ou None si impossible.
+    """
+    # Tenter de trouver le fichier PDF
+    pdf_path = None
+    corpus_dir = project_dir / "corpus"
+    if corpus_dir.exists():
+        candidates = list(corpus_dir.rglob(ext.source_filename))
+        if candidates:
+            pdf_path = candidates[0]
+
+    if pdf_path:
+        try:
+            import fitz
+            doc = fitz.open(str(pdf_path))
+            pages_text = []
+            for i in range(min(max_pages, len(doc))):
+                pages_text.append(doc[i].get_text())
+            doc.close()
+            return "\n".join(pages_text)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Erreur lecture premières pages de {ext.source_filename}: {e}")
+
+    # Fallback : utiliser le texte déjà extrait (tronqué)
+    if ext.text:
+        # Approximation : ~3000 chars par page
+        return ext.text[:max_pages * 3000]
+
+    return None
 
 
 class Orchestrator:
@@ -577,6 +722,10 @@ class Orchestrator:
                     except ImportError:
                         logger.warning("Module grobid_client non disponible")
 
+                # Phase 2 Sprint 2 : déterminer si le fallback LLM est actif
+                use_llm_fallback = grobid_config.get("fallback_llm", True) and grobid_client is None
+                llm_model_for_meta = grobid_config.get("llm_model", "gpt-4o-mini")
+
                 for ext in self.state.corpus.extractions:
                     doc_id = ext.hash_binary if ext.hash_binary else f"{ext.source_filename}_{hash(ext.text[:50])}"
 
@@ -598,6 +747,18 @@ class Orchestrator:
                                     logger.info(f"GROBID : métadonnées enrichies pour {ext.source_filename}")
                         except Exception as e:
                             logger.warning(f"GROBID : erreur pour {ext.source_filename}: {e}")
+
+                    # Phase 2 Sprint 2 : fallback LLM pour les métadonnées si GROBID absent
+                    elif use_llm_fallback and ext.source_filename.lower().endswith(".pdf"):
+                        try:
+                            llm_meta = _extract_metadata_via_llm(
+                                ext, self.project_dir, self.provider, llm_model_for_meta,
+                            )
+                            if llm_meta:
+                                ext.metadata.update(llm_meta)
+                                logger.info(f"LLM fallback : métadonnées extraites pour {ext.source_filename}")
+                        except Exception as e:
+                            logger.warning(f"LLM fallback métadonnées : erreur pour {ext.source_filename}: {e}")
 
                     # Extraire auteurs et année depuis les métadonnées
                     authors = None
@@ -704,12 +865,29 @@ class Orchestrator:
 
         metadata_store = MetadataStore(str(self.project_dir))
 
+        # Phase 2 Sprint 2 : fallback LLM pour les métadonnées si GROBID absent
+        grobid_config = self.config.get("grobid", {})
+        use_llm_fallback = grobid_config.get("fallback_llm", True) and not grobid_config.get("enabled", False)
+        llm_model_for_meta = grobid_config.get("llm_model", "gpt-4o-mini")
+
         for ext in self.state.corpus.extractions:
             doc_id = (
                 ext.hash_binary
                 if ext.hash_binary
                 else f"{ext.source_filename}_{hash(ext.text[:50])}"
             )
+
+            # Enrichir via LLM si PDF et GROBID absent
+            if use_llm_fallback and ext.source_filename.lower().endswith(".pdf"):
+                try:
+                    llm_meta = _extract_metadata_via_llm(
+                        ext, self.project_dir, self.provider, llm_model_for_meta,
+                    )
+                    if llm_meta:
+                        ext.metadata.update(llm_meta)
+                        logger.info(f"LLM fallback : métadonnées extraites pour {ext.source_filename}")
+                except Exception as e:
+                    logger.warning(f"LLM fallback métadonnées : erreur pour {ext.source_filename}: {e}")
 
             authors = None
             year = None

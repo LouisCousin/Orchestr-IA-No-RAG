@@ -84,6 +84,70 @@ class OpenAIProvider(BaseProvider):
 
         raise RuntimeError(f"Échec après {self._max_retries + 1} tentatives: {last_error}")
 
+    def generate_json(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 1024,
+    ) -> AIResponse:
+        """Génère du contenu JSON structuré via l'API OpenAI (response_format=json_object).
+
+        Utilisé notamment pour l'extraction de métadonnées bibliographiques
+        en alternative à GROBID.
+
+        Args:
+            prompt: Texte contenant les premières pages du PDF.
+            system_prompt: Instructions système.
+            model: Modèle à utiliser (par défaut gpt-4o-mini).
+            temperature: Température de génération.
+            max_tokens: Nombre max de tokens en sortie.
+
+        Returns:
+            AIResponse dont le contenu est une chaîne JSON.
+        """
+        model = model or "gpt-4o-mini"
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        last_error = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                client = self._get_client()
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format={"type": "json_object"},
+                )
+                choice = response.choices[0]
+                usage = response.usage
+                return AIResponse(
+                    content=choice.message.content or "{}",
+                    model=model,
+                    provider=self.name,
+                    input_tokens=usage.prompt_tokens if usage else 0,
+                    output_tokens=usage.completion_tokens if usage else 0,
+                    total_tokens=usage.total_tokens if usage else 0,
+                    finish_reason=choice.finish_reason or "",
+                    raw_response=response.model_dump() if hasattr(response, "model_dump") else None,
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < self._max_retries:
+                    delay = self._base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Erreur API OpenAI JSON (tentative {attempt + 1}/"
+                        f"{self._max_retries + 1}): {e}. Retry dans {delay}s..."
+                    )
+                    time.sleep(delay)
+
+        raise RuntimeError(f"Échec generate_json après {self._max_retries + 1} tentatives: {last_error}")
+
     def is_available(self) -> bool:
         """Vérifie si la clé API est configurée."""
         return bool(self._api_key and self._api_key != "sk-your-openai-api-key-here")
