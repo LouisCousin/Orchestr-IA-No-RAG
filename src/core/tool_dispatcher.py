@@ -393,7 +393,7 @@ class ToolDispatcher:
                 tool_calls.append({"name": name, "arguments": arguments})
 
         # Pattern 1: Bloc ```json avec structure tool_call (prioritaire)
-        code_block_pattern = r'```json\s*(\{.*?\})\s*```'
+        code_block_pattern = r'```json\s*(\{.*\})\s*```'
         for match in re.finditer(code_block_pattern, content, re.DOTALL):
             try:
                 data = json.loads(match.group(1))

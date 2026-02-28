@@ -5,7 +5,6 @@ Phase 7 : génère le contenu Markdown d'une section en s'appuyant sur
 """
 
 import logging
-import time
 
 from src.core.agent_framework import AgentResult, BaseAgent
 

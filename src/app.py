@@ -4,8 +4,7 @@ import sys
 from pathlib import Path
 
 # Ajouter le répertoire racine au path
-ROOT_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT_DIR))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
 from src.utils.config import load_env, load_default_config, ROOT_DIR
@@ -90,6 +89,7 @@ def render_sidebar():
                     state_path = ROOT_DIR / "projects" / project_id / "state.json"
                     save_json(state_path, state.to_dict())
                 st.session_state.current_page = page_id
+                st.rerun()
 
         st.markdown("---")
 

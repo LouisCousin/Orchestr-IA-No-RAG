@@ -6,8 +6,6 @@ from pathlib import Path
 from src.utils.config import ROOT_DIR
 from src.utils.file_utils import ensure_dir, save_json
 from src.core.plan_parser import PlanParser, NormalizedPlan
-from src.core.text_extractor import extract
-from src.core.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType
 
 
 PROJECTS_DIR = ROOT_DIR / "projects"

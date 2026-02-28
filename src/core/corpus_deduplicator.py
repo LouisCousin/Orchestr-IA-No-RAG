@@ -1,6 +1,5 @@
 """Déduplication automatique du corpus par hash SHA-256."""
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path

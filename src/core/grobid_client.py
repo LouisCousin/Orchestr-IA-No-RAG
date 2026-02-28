@@ -93,6 +93,11 @@ class GrobidClient:
                     )
                 if response.status_code == 200:
                     return self._parse_tei_header(response.text)
+                elif response.status_code >= 500 and attempt == 0:
+                    logger.warning(
+                        f"GROBID : statut {response.status_code} pour {pdf_path.name}, retry..."
+                    )
+                    continue
                 else:
                     logger.warning(
                         f"GROBID : statut {response.status_code} pour {pdf_path.name}"

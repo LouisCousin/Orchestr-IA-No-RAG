@@ -9,7 +9,6 @@ Gère quatre cas de calcul pour Gemini 3.1 :
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 from src.utils.config import load_model_pricing
@@ -188,7 +187,7 @@ class CostTracker:
         # Mettre à jour les stats de cache
         stats = self._report.gemini_cache_stats
         stats["cache_hits"] = stats.get("cache_hits", 0) + 1
-        stats["tokens_cached"] = stats.get("tokens_cached", 0) + cached_tokens
+        stats["tokens_read_from_cache"] = stats.get("tokens_read_from_cache", 0) + cached_tokens
 
         return cost
 
@@ -229,7 +228,6 @@ class CostTracker:
         # Mettre à jour les stats de cache
         stats = self._report.gemini_cache_stats
         stats["storage_cost_usd"] = stats.get("storage_cost_usd", 0.0) + cost
-        stats["tokens_cached"] = stats.get("tokens_cached", 0) + cached_tokens
 
         return cost
 
