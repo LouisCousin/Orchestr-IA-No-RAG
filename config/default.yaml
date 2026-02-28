@@ -87,6 +87,9 @@ pdf_extraction:
 # ═══════════════════════════════════════════
 
 rag:
+  # ── Kill Switch (Phase 8) ──
+  enabled: true                    # false = désactive complètement le RAG (ChromaDB, embeddings, reranker)
+
   # ── Chunking sémantique ──
   chunking:
     strategy: "semantic"           # "semantic" | "fixed"

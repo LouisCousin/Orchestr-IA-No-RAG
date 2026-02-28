@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, fields as dc_fields
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 logger = logging.getLogger("orchestria")
 

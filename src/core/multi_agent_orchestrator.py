@@ -3,16 +3,24 @@
 Phase 7 : coordonne les 5 agents spécialisés (Architecte, Rédacteur,
            Vérificateur, Évaluateur, Correcteur) en parallèle via asyncio,
            en respectant le graphe de dépendances (DAG) entre sections.
+
+Phase 8 (v3.0) :
+  - Intégration du Context Cache Gemini dans le pipeline multi-agents.
+  - HITL : scission du workflow (run_architect_phase / run_generation_phase).
+  - Circuit Breaker DAG : annulation en cascade des sections descendantes
+    lorsqu'une section mère échoue.
 """
 
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from src.core.agent_framework import (
     AgentConfig,
+    AgentMessage,
     AgentResult,
     AgentState,
     BaseAgent,
@@ -119,6 +127,41 @@ def get_ready_sections(
     return ready
 
 
+def get_descendants(dag: dict, failed_node: str) -> set[str]:
+    """Retourne tous les descendants (directs et indirects) d'un nœud via BFS.
+
+    Un nœud B est descendant de A si A apparaît dans les dépendances
+    (directes ou transitives) de B. Autrement dit, B dépend — directement
+    ou indirectement — du résultat de A.
+
+    Args:
+        dag: Graphe de dépendances {section_id: [deps_requises]}.
+        failed_node: Identifiant du nœud en échec.
+
+    Returns:
+        Ensemble des identifiants de toutes les sections descendantes
+        (excluant *failed_node* lui-même).
+    """
+    # Construire le graphe inversé : parent → enfants directs
+    children: dict[str, list[str]] = {node: [] for node in dag}
+    for node, deps in dag.items():
+        for dep in deps:
+            if dep in children:
+                children[dep].append(node)
+
+    # BFS depuis le nœud en échec
+    visited: set[str] = set()
+    queue: deque[str] = deque(children.get(failed_node, []))
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        queue.extend(children.get(current, []))
+
+    return visited
+
+
 # ── Orchestrateur ───────────────────────────────────────────────────────────
 
 
@@ -146,6 +189,8 @@ class MultiAgentOrchestrator:
         self._cost_tracker = CostTracker()
         self._done = False
         self._start_time = 0.0
+        # Phase 8 : Context Cache Gemini pour le pipeline multi-agents
+        self._cache_id: Optional[str] = None
 
         self._initialize_agents()
 
@@ -215,14 +260,168 @@ class MultiAgentOrchestrator:
                 return "\n\n".join(parts)
         return ""
 
+    # ── Phase 8 : Context Cache ─────────────────────────────────────────────
+
+    def _init_context_cache(self) -> Optional[str]:
+        """Initialise le cache de contexte Gemini si le provider actif le supporte.
+
+        Retourne le cache_id (str) ou None si le caching n'est pas applicable.
+        """
+        state_config = getattr(self.state, "config", {})
+        gemini_cfg = state_config.get("gemini", {})
+        if not gemini_cfg.get("caching_enabled", False):
+            return None
+
+        google_provider = self.providers.get("google")
+        if not google_provider:
+            return None
+
+        # Vérifier que le provider Gemini supporte le caching
+        if not hasattr(google_provider, "supports_caching") or not google_provider.supports_caching():
+            return None
+
+        corpus_text = self._get_corpus_text()
+        if not corpus_text:
+            return None
+
+        try:
+            from src.core.gemini_cache_manager import GeminiCacheManager
+
+            cache_manager = GeminiCacheManager()
+            existing_cache = getattr(self.state, "cache_id", None)
+            model = gemini_cfg.get("model", "gemini-3.1-pro-preview")
+            ttl = gemini_cfg.get("cache_ttl_seconds", 7200)
+
+            # Le system_prompt global sera inclus dans le cache
+            system_prompt = (
+                "Tu es un assistant spécialisé dans la rédaction documentaire. "
+                "Le corpus ci-dessous contient les sources de référence pour "
+                "la génération de chaque section."
+            )
+
+            cache_id = cache_manager.get_or_create_cache(
+                project_id=self.state.name if hasattr(self.state, "name") else "project",
+                corpus_xml=corpus_text,
+                system_prompt=system_prompt,
+                model=model,
+                ttl=ttl,
+                existing_cache_name=existing_cache,
+            )
+            logger.info(f"Context Cache Gemini initialisé : {cache_id}")
+            # Persister le cache_id dans le state
+            if hasattr(self.state, "cache_id"):
+                self.state.cache_id = cache_id
+            return cache_id
+
+        except Exception as e:
+            logger.warning(f"Impossible d'initialiser le Context Cache Gemini : {e}")
+            return None
+
+    # ── Pipeline principal ────────────────────────────────────────────────
+
     async def run(self) -> GenerationResult:
-        """Point d'entrée principal. Exécute le pipeline complet."""
+        """Point d'entrée principal. Exécute le pipeline complet.
+
+        Note : pour un workflow HITL (humain dans la boucle), utilisez plutôt
+        run_architect_phase() puis run_generation_phase(architecture).
+        """
         self._start_time = time.time()
         self._done = False
 
         try:
+            # Étape 0 : Initialiser le cache de contexte Gemini
+            self._cache_id = self._init_context_cache()
+
             # Étape 1 : Architecture
             architecture = await self._run_architect()
+            self._result.architecture = architecture
+
+            # Étape 2 : Génération parallèle
+            sections = await self._run_generation_phase(architecture)
+            self._result.sections = sections
+
+            # Étape 3 : Vérification parallèle
+            verif_reports = await self._run_verification_phase(sections, architecture)
+            self._result.verif_reports = verif_reports
+
+            # Étape 4 : Évaluation
+            eval_result = await self._run_evaluation(sections, verif_reports)
+            self._result.eval_result = eval_result
+
+            # Étape 5 : Correction (conditionnelle)
+            sections_to_fix = eval_result.get("sections_a_corriger", [])
+            if sections_to_fix and eval_result.get("recommandation") != "exporter":
+                corrected = await self._run_correction_phase(
+                    sections_to_fix, verif_reports, eval_result, architecture
+                )
+                self._result.sections.update(corrected)
+
+            # Collecter les alertes
+            self._result.alerts = [
+                {"section_id": a.payload.get("section_id", ""),
+                 "reason": a.payload.get("reason", "")}
+                for a in self.bus.get_alerts()
+            ]
+
+        except Exception as e:
+            logger.error(f"Erreur pipeline multi-agents: {e}")
+            self._result.eval_result["error"] = str(e)
+
+        self._result.total_duration_ms = int((time.time() - self._start_time) * 1000)
+        self._done = True
+        return self._result
+
+    # ── HITL : workflow scindé ────────────────────────────────────────────
+
+    async def run_architect_phase(self) -> dict:
+        """Phase 1 du workflow HITL : exécute uniquement l'Architecte.
+
+        Retourne l'architecture (sections + dépendances) et met à jour
+        ProjectState avec le statut ``waiting_for_architect_validation``.
+
+        Returns:
+            Architecture générée par l'Architecte (sections, dependances, etc.).
+        """
+        self._start_time = time.time()
+        self._done = False
+
+        # Initialiser le cache de contexte
+        self._cache_id = self._init_context_cache()
+
+        architecture = await self._run_architect()
+        self._result.architecture = architecture
+
+        # Mettre à jour le statut pour signaler l'attente HITL
+        if hasattr(self.state, "current_step"):
+            self.state.current_step = "waiting_for_architect_validation"
+        if hasattr(self.state, "agent_architecture"):
+            self.state.agent_architecture = architecture
+
+        return architecture
+
+    async def run_generation_phase(self, architecture: dict) -> GenerationResult:
+        """Phase 2 du workflow HITL : exécute la génération après validation.
+
+        Reprend le pipeline à partir de l'architecture validée (potentiellement
+        modifiée par l'utilisateur).
+
+        Args:
+            architecture: Architecture validée par l'utilisateur.
+
+        Returns:
+            GenerationResult complet.
+        """
+        if not self._start_time:
+            self._start_time = time.time()
+
+        try:
+            # Re-valider le DAG avec l'architecture potentiellement modifiée
+            dependances = architecture.get("dependances", {})
+            try:
+                self._dag = build_dag(dependances)
+            except ValueError as e:
+                logger.error(str(e))
+                self._dag = {sid: [] for sid in dependances}
             self._result.architecture = architecture
 
             # Étape 2 : Génération parallèle
@@ -320,16 +519,24 @@ class MultiAgentOrchestrator:
         Utilise asyncio.create_task pour un vrai streaming DAG : dès qu'une
         section se termine, les sections dépendantes deviennent immédiatement
         éligibles au lancement, sans attendre la fin du batch courant.
+
+        Phase 8 (v3.0) :
+          - Injection de cache_id (Gemini) au lieu de corpus_text si disponible.
+          - Circuit Breaker : en cas d'échec d'une section, tous les descendants
+            dans le DAG sont annulés en cascade (pas d'appel API).
         """
         sections_data = {s["id"]: s for s in architecture.get("sections", [])}
         system_prompt_global = architecture.get("system_prompt_global", "")
-        corpus_text = self._get_corpus_text()
+
+        # Phase 8 : passer cache_id si disponible, sinon corpus_text
+        corpus_text = self._get_corpus_text() if not self._cache_id else ""
 
         completed: set[str] = set()
         in_progress: set[str] = set()
         generated: dict[str, str] = {}
         section_summaries: dict[str, str] = {}
         pending_tasks: dict[str, asyncio.Task] = {}  # sid -> Task
+        cancelled: set[str] = set()  # sections annulées par le circuit breaker
 
         while len(completed) < len(self._dag):
             # Lancer toutes les sections prêtes non encore en cours
@@ -358,6 +565,7 @@ class MultiAgentOrchestrator:
                     "section_ton": section_info.get("ton", "analytique"),
                     "longueur_cible": section_info.get("longueur_cible", 500),
                     "corpus_text": corpus_text,
+                    "cache_id": self._cache_id,
                     "system_prompt_global": system_prompt_global,
                     "prerequisite_sections": prereqs,
                     "description": f"Rédaction {sid}",
@@ -393,7 +601,15 @@ class MultiAgentOrchestrator:
                 except Exception as exc:
                     logger.error(f"Erreur rédaction: {exc}")
                     in_progress.discard(finished_sid)
+                    # Circuit Breaker : propager l'échec
+                    self._cancel_descendants(
+                        finished_sid, completed, generated, cancelled,
+                        pending_tasks, in_progress,
+                    )
                     completed.add(finished_sid)
+                    generated[finished_sid] = (
+                        f"{{{{GENERATION_FAILED}}}}\n{exc}"
+                    )
                     continue
 
                 sid, result = sid_result
@@ -408,6 +624,12 @@ class MultiAgentOrchestrator:
                     generated[sid] = f"{{{{GENERATION_FAILED}}}}\n{result.error or ''}"
                     await self.bus.store_section(sid, generated[sid])
 
+                    # ── Circuit Breaker : annulation en cascade ──
+                    self._cancel_descendants(
+                        sid, completed, generated, cancelled,
+                        pending_tasks, in_progress,
+                    )
+
                 completed.add(sid)
                 self._track_cost(result, "redacteur")
                 self._log_timeline(
@@ -421,6 +643,69 @@ class MultiAgentOrchestrator:
                     )
 
         return generated
+
+    def _cancel_descendants(
+        self,
+        failed_sid: str,
+        completed: set[str],
+        generated: dict[str, str],
+        cancelled: set[str],
+        pending_tasks: dict[str, "asyncio.Task"],
+        in_progress: set[str],
+    ) -> None:
+        """Circuit Breaker : annule en cascade tous les descendants d'une section échouée.
+
+        Les descendants sont marqués comme complétés avec le marqueur
+        ``{{CANCELLED_DEPENDENCY_FAILED}}`` et un événement est publié
+        sur le MessageBus pour chaque section annulée.
+        """
+        descendants = get_descendants(self._dag, failed_sid)
+        if not descendants:
+            return
+
+        logger.warning(
+            f"Circuit Breaker : section '{failed_sid}' échouée → "
+            f"annulation de {len(descendants)} descendant(s) : {descendants}"
+        )
+
+        for desc_sid in descendants:
+            if desc_sid in cancelled or desc_sid in completed:
+                continue
+
+            cancelled.add(desc_sid)
+            in_progress.discard(desc_sid)
+            completed.add(desc_sid)
+            generated[desc_sid] = (
+                f"{{{{CANCELLED_DEPENDENCY_FAILED}}}}\n"
+                f"Annulé suite à l'échec de la section {failed_sid}"
+            )
+
+            # Annuler la tâche asyncio si elle est en cours
+            if desc_sid in pending_tasks:
+                pending_tasks[desc_sid].cancel()
+                del pending_tasks[desc_sid]
+
+            # Publier une alerte sur le MessageBus
+            alert = AgentMessage(
+                sender="orchestrateur",
+                recipient="*",
+                type="alert",
+                payload={
+                    "section_id": desc_sid,
+                    "reason": (
+                        f"Section '{desc_sid}' annulée suite à l'échec "
+                        f"de la section '{failed_sid}'"
+                    ),
+                },
+                section_id=desc_sid,
+                priority=1,
+            )
+            self.bus.store_alert_sync(alert)
+
+            self._log_timeline(
+                "circuit_breaker", "cancelled",
+                f"{desc_sid} (dépend de {failed_sid})",
+            )
 
     async def _execute_writer(
         self, section_id: str, task: dict
@@ -448,7 +733,8 @@ class MultiAgentOrchestrator:
         if not agent:
             return {}
 
-        corpus_text = self._get_corpus_text()
+        # Phase 8 : utiliser cache_id si disponible
+        corpus_text = self._get_corpus_text() if not self._cache_id else ""
         verif_reports = {}
 
         # Construire les résumés inter-sections
@@ -456,8 +742,15 @@ class MultiAgentOrchestrator:
             f"[{sid}]: {content[:300]}" for sid, content in sections.items()
         )
 
+        # Ne pas vérifier les sections annulées par le Circuit Breaker
+        sections_to_verify = {
+            sid: content for sid, content in sections.items()
+            if "{{CANCELLED_DEPENDENCY_FAILED}}" not in content
+            and "{{GENERATION_FAILED}}" not in content
+        }
+
         tasks = []
-        for sid, content in sections.items():
+        for sid, content in sections_to_verify.items():
             section_info = next(
                 (s for s in architecture.get("sections", []) if s.get("id") == sid),
                 {"id": sid, "title": sid},
@@ -467,6 +760,7 @@ class MultiAgentOrchestrator:
                 "section_title": section_info.get("title", sid),
                 "section_content": content,
                 "corpus_text": corpus_text,
+                "cache_id": self._cache_id,
                 "other_sections_summaries": summaries,
                 "description": f"Vérification {sid}",
             }
