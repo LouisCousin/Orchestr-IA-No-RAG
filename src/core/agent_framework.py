@@ -277,6 +277,7 @@ class AgentConfig:
     section_correction_threshold: float = 3.0
     max_correction_passes: int = 2
     max_cost_usd: float = 5.0
+    use_batch_api: bool = False
     agents: dict = field(default_factory=dict)
 
     @classmethod
@@ -291,6 +292,7 @@ class AgentConfig:
             section_correction_threshold=ma.get("section_correction_threshold", 3.0),
             max_correction_passes=ma.get("max_correction_passes", 2),
             max_cost_usd=ma.get("max_cost_usd", 5.0),
+            use_batch_api=ma.get("use_batch_api", False),
             agents=ma.get("agents", {}),
         )
 

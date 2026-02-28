@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -206,6 +206,8 @@ def _load_pdf_extraction_config() -> dict:
         "disable_page_images": pdf_cfg.get("disable_page_images", True),
         "disable_picture_classification": pdf_cfg.get("disable_picture_classification", True),
         "disable_ocr": pdf_cfg.get("disable_ocr", True),
+        "docling_max_file_size_mb": pdf_cfg.get("docling_max_file_size_mb", 50),
+        "docling_timeout_seconds": pdf_cfg.get("docling_timeout_seconds", 180),
     }
 
 
@@ -381,10 +383,22 @@ def _get_pdf_page_count(path: Path) -> int:
     return 0
 
 
+class _DoclingFileTooLarge(Exception):
+    """Raised when a PDF file exceeds the configured size limit for Docling."""
+    pass
+
+
+class _DoclingTimeoutError(Exception):
+    """Raised when Docling extraction exceeds the configured timeout."""
+    pass
+
+
 def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, str, str]:
     """Extraction PDF via Docling avec structure sémantique.
 
     Inclut :
+    - Contrôle de poids max (docling_max_file_size_mb) : bypass vers pymupdf si dépassé
+    - Coupe-circuit temporel (docling_timeout_seconds) sur future.result()
     - Options de pipeline optimisées (pas d'images, backend PyPdfium2)
     - Traitement parallèle par lots via ProcessPoolExecutor pour les gros PDF (>50 pages)
     - Singleton DocumentConverter par worker (chargé une seule fois)
@@ -393,11 +407,28 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
 
     Returns:
         Tuple (texte_complet, nombre_pages, structure_sémantique, titre, méthode, statut).
+
+    Raises:
+        _DoclingFileTooLarge: si le fichier dépasse la limite de poids configurée.
     """
     pdf_cfg = _load_pdf_extraction_config()
     batch_threshold = pdf_cfg["docling_batch_threshold"]
     batch_size = pdf_cfg["docling_page_batch_size"]
     coverage_threshold = pdf_cfg["coverage_threshold"]
+    max_file_size_mb = pdf_cfg["docling_max_file_size_mb"]
+    timeout_seconds = pdf_cfg["docling_timeout_seconds"]
+
+    # ── Filtre de poids : court-circuiter Docling si fichier trop lourd ──
+    file_size_bytes = os.path.getsize(path)
+    file_size_mb = file_size_bytes / (1024 * 1024)
+    if file_size_mb > max_file_size_mb:
+        logger.warning(
+            f"Fichier trop lourd pour Docling : {path.name} "
+            f"({file_size_mb:.1f} Mo > {max_file_size_mb} Mo), fallback pymupdf"
+        )
+        raise _DoclingFileTooLarge(
+            f"{path.name} ({file_size_mb:.1f} Mo) dépasse la limite Docling de {max_file_size_mb} Mo"
+        )
 
     # Déterminer le nombre total de pages
     total_pages = _get_pdf_page_count(path)
@@ -436,10 +467,22 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
                 for future in as_completed(futures):
                     args = futures[future]
                     try:
-                        batch_sections = future.result()
+                        batch_sections = future.result(timeout=timeout_seconds)
                         sections.extend(batch_sections)
+                    except FuturesTimeoutError:
+                        logger.warning(
+                            f"  Timeout Docling ({timeout_seconds}s) lot pages "
+                            f"{args[1]}-{args[2]}, fallback pymupdf"
+                        )
+                        future.cancel()
+                        raise _DoclingTimeoutError(
+                            f"Timeout Docling après {timeout_seconds}s "
+                            f"pour lot pages {args[1]}-{args[2]}"
+                        )
                     except Exception as e:
                         logger.warning(f"  Échec lot pages {args[1]}-{args[2]}: {e}")
+        except _DoclingTimeoutError:
+            raise
         except Exception as e:
             logger.warning(f"Échec ProcessPoolExecutor, fallback séquentiel : {e}")
             # Fallback séquentiel en cas d'erreur du pool
@@ -461,29 +504,39 @@ def _extract_pdf_docling(path: Path) -> tuple[str, int, list[dict], str | None, 
                         pass
                     gc.collect()
     else:
-        # ── Mode single-pass : PDF de taille modérée ──
-        converter = None
-        result = None
+        # ── Mode single-pass : PDF de taille modérée, avec timeout ──
         try:
-            converter = _create_docling_converter(pdf_cfg)
-            result = converter.convert(str(path))
-            sections = _extract_sections_from_docling_result(result)
+            with ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_init_docling_worker,
+                initargs=(pdf_cfg,),
+            ) as executor:
+                future = executor.submit(
+                    _docling_worker_extract_batch,
+                    (str(path), 1, total_pages if total_pages > 0 else 9999),
+                )
+                try:
+                    sections = future.result(timeout=timeout_seconds)
+                except FuturesTimeoutError:
+                    logger.warning(
+                        f"Timeout Docling ({timeout_seconds}s) single-pass pour "
+                        f"{path.name}, fallback pymupdf"
+                    )
+                    future.cancel()
+                    raise _DoclingTimeoutError(
+                        f"Timeout Docling après {timeout_seconds}s pour {path.name}"
+                    )
 
-            # Récupérer le page_count depuis Docling si on ne l'a pas
-            if total_pages == 0:
-                doc = result.document
-                total_pages = doc.num_pages() if hasattr(doc, "num_pages") else max(
+            # Récupérer le page_count depuis les sections si on ne l'a pas
+            if total_pages == 0 and sections:
+                total_pages = max(
                     (s.get("page") or 0 for s in sections), default=1
                 )
+        except _DoclingTimeoutError:
+            raise
         except Exception as e:
             logger.warning(f"Erreur extraction Docling single-pass pour {path.name}: {e}")
             raise
-        finally:
-            if converter:
-                del converter
-            if result:
-                del result
-            gc.collect()
 
     # ── Validation basée sur le contenu (anti "faux-négatifs") ──
     # Si Docling a extrait du texte significatif (>50 chars), on accepte directement
@@ -666,6 +719,10 @@ def extract_pdf(path: Path) -> ExtractionResult:
                     return result
                 else:
                     logger.warning(f"Extraction vide avec {lib_name} pour {path.name}, tentative suivante...")
+        except (_DoclingFileTooLarge, _DoclingTimeoutError) as e:
+            # Docling short-circuited (file too large or timeout) — skip to next lib
+            logger.warning(f"Docling contourné pour {path.name}: {e}")
+            continue
         except Exception as e:
             logger.warning(f"Échec extraction PDF avec {lib_name} pour {path.name}: {e}")
             continue
