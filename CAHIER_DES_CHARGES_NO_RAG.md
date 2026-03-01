@@ -69,18 +69,24 @@ sentence-transformers>=3.0
 
 ### 1.3 Contraintes Techniques Confirmées (Gemini API)
 
-D'après la documentation officielle Google (mars 2026) :
+D'après la configuration existante du projet (`config/model_pricing.yaml`) et la documentation Gemini (mars 2026) :
 
-| Contrainte | Valeur | Impact |
-|-----------|--------|--------|
-| Minimum tokens pour caching (Flash) | 1 028 tokens | Pratiquement toujours dépassé |
-| Minimum tokens pour caching (Pro) | 2 048 tokens | Pratiquement toujours dépassé |
-| Fenêtre contexte Gemini 2.5 Pro | 1 048 576 tokens (~1M) | Limite physique |
-| Fenêtre contexte Gemini 2.5 Flash | 1 048 576 tokens (~1M) | Limite physique |
-| Coût lecture tokens cachés | -90% vs standard | Objectif économique principal |
-| TTL par défaut | 1 heure | À gérer via heartbeat |
-| Coût stockage cache | $0.50–$4.50 / heure / M tokens | À monitorer |
-| Caching implicite Gemini 2.5 | Activé par défaut (mai 2025) | Bonus automatique |
+| Contrainte | Modèle | Valeur | Impact |
+|-----------|--------|--------|--------|
+| Minimum tokens pour caching | `gemini-3.1-pro-preview` | **2 048 tokens** | Pratiquement toujours dépassé (contrainte C4 déjà dans le code) |
+| Minimum tokens pour caching | `gemini-3-flash-preview` | **2 048 tokens** | Identique au Pro |
+| Fenêtre contexte | `gemini-3.1-pro-preview` | **1 000 000 tokens** | Limite physique absolue |
+| Fenêtre contexte | `gemini-3-flash-preview` | **1 000 000 tokens** | Identique au Pro |
+| **Max output par appel** | Les deux | **65 536 tokens** | ⚠️ Critique : un doc >65K tokens = obligatoirement multi-passes |
+| Coût tokens cachés | `gemini-3.1-pro-preview` | **$0.20/M** (vs $2.00 standard) = **-90%** | Objectif économique principal |
+| Coût tokens cachés | `gemini-3-flash-preview` | **$0.05/M** (vs $0.50 standard) = **-90%** | Option économique pour compression |
+| Coût stockage cache | `gemini-3.1-pro-preview` | **$0.50 / heure / M tokens** | À monitorer via CostTracker |
+| Coût stockage cache | `gemini-3-flash-preview` | **$1.00 / heure / M tokens** | Plus cher à stocker qu'à lire |
+| TTL par défaut | Les deux | **1 heure** | À prolonger via CacheHeartbeat |
+| Long context repricing | `gemini-3.1-pro-preview` | **>200K tokens** → $4.00/M input | Contrainte C6 déjà dans gemini_cache_manager.py |
+| Long context repricing | `gemini-3-flash-preview` | **Aucun** (pas de repricing Flash) | Avantage Flash pour les gros corpus |
+
+> **Conséquence directe du max_output_tokens = 65 536** : pour un document estimé à 50K+ tokens, la génération est obligatoirement multi-passes (une section à la fois). C'est exactement pourquoi le seuil output de 50K tokens déclenche le mode cache : il faut ancrer le contexte global pour éviter le drift entre passes.
 
 ---
 
@@ -165,7 +171,7 @@ Une fois HIGH_VOLUME_CACHE activé, il ne peut pas être rétrogradé à STANDAR
 #### Mode STANDARD (< 650K tokens input ET < 50K tokens output)
 
 - Le corpus formaté en XML structuré est injecté directement dans le `system_instruction` de chaque appel LLM
-- Aucun cache explicite créé (le caching implicite Gemini 2.5 peut s'appliquer automatiquement)
+- Aucun cache explicite créé (le caching implicite Gemini 3.x peut s'appliquer automatiquement selon l'historique de requêtes)
 - Aucune dépendance à ChromaDB ou embeddings
 - Compatible avec tous les providers (OpenAI, Anthropic, Gemini)
 
@@ -764,7 +770,7 @@ Ajouter un bloc "Analyse de Coûts Stratégique" :
 |-------|--------|
 | Stratégie active | HIGH_VOLUME_CACHE |
 | Corpus (tokens) | 712 000 tokens |
-| Cache créé | Oui (gemini-2.5-pro) |
+| Cache créé | Oui (gemini-3.1-pro-preview) |
 | Économies cache | -90% sur tokens input |
 | Coût cache storage | ~$0.38 (durée estimée 45min) |
 | Coût compression | $0.00 (non requise) |
@@ -853,29 +859,45 @@ multi_agent:
 # SUPPRIMER la section plan_corpus_linker (inutile sans RAG)
 ```
 
-### 6.2 Modifications de `config/model_pricing.yaml`
+### 6.2 `config/model_pricing.yaml` — Section Google (aucune modification requise)
 
-Mettre à jour la section Gemini pour refléter les tarifs 2026 :
+La section Google est **déjà correctement configurée** dans le codebase existant. Aucune modification nécessaire. Pour référence, les valeurs actives :
 
 ```yaml
+# Phase 5 — Google (Gemini 3.1) — config/model_pricing.yaml ACTUELLE
 google:
-  gemini-2.5-pro:
-    input_per_million: 1.25        # ≤ 200K tokens
-    input_per_million_long: 2.50   # > 200K tokens
-    output_per_million: 10.00
-    input_cached_per_million: 0.31  # -75% implicite / -90% explicite
-    cache_storage_per_hour_per_million: 4.50
-    context_window: 1048576
+  gemini-3.1-pro-preview:          # Modèle principal — rédaction, architecture, vérification
+    input: 2.00                    # USD / M tokens (≤ 200K tokens)
+    input_cached: 0.20             # USD / M tokens cachés → -90% vs standard
+    input_long_context: 4.00       # USD / M tokens (> 200K tokens)
+    output: 12.00                  # USD / M tokens output
+    output_long_context: 18.00     # USD / M tokens output (long context)
+    cache_storage_per_hour: 0.50   # USD / heure / M tokens stockés
+    context_window: 1000000        # 1M tokens fenêtre réelle
+    max_output_tokens: 65536       # ⚠️ CRITIQUE : plafond output par appel
 
-  gemini-2.5-flash:
-    input_per_million: 0.075
-    input_per_million_long: 0.15
-    output_per_million: 0.30
-    input_cached_per_million: 0.01875  # -75% implicite
-    cache_storage_per_hour_per_million: 1.00
-    context_window: 1048576
-    min_cache_tokens: 1028  # Plus bas que Pro
+  gemini-3-flash-preview:          # Modèle compression sémantique et tâches légères
+    input: 0.50                    # USD / M tokens
+    input_cached: 0.05             # USD / M tokens cachés → -90%
+    output: 3.00                   # USD / M tokens output
+    cache_storage_per_hour: 1.00   # USD / heure / M tokens (plus cher à stocker que Pro)
+    context_window: 1000000        # 1M tokens
+    max_output_tokens: 65536       # ⚠️ Même plafond que Pro
+    # Pas de long_context_threshold ni repricing pour Flash
 ```
+
+**Rôle de chaque modèle dans l'architecture v4.0 :**
+
+| Tâche | Modèle recommandé | Justification |
+|-------|------------------|---------------|
+| Agent Architecte | `gemini-3.1-pro-preview` | Raisonnement complexe sur corpus global |
+| Agent Rédacteur | `gemini-3.1-pro-preview` | Qualité rédactionnelle maximale |
+| Agent Vérificateur | `gemini-3.1-pro-preview` | Fact-checking rigoureux (accès cache) |
+| Agent Évaluateur | `gemini-3.1-pro-preview` ou GPT-4.1 | Scoring qualité (sans accès corpus) |
+| Agent Correcteur | `gemini-3.1-pro-preview` ou GPT-4.1 | Correction stylistique |
+| Compression Niveau 2 (extractive) | `gemini-3-flash-preview` | Extraction faits — vitesse et coût |
+| Compression Niveau 3 (télégraphique) | `gemini-3-flash-preview` | Compression de forme — modèle léger suffit |
+| Format corpus XML (pré-cache) | `gemini-3-flash-preview` | Tâche mécanique, faible coût |
 
 ---
 
@@ -1128,7 +1150,7 @@ Section N+k → Suppression cache
 - [Gemini API — Context Caching](https://ai.google.dev/gemini-api/docs/caching)
 - [Gemini API — Long Context](https://ai.google.dev/gemini-api/docs/long-context)
 - [Gemini API — Pricing 2026](https://ai.google.dev/gemini-api/docs/pricing)
-- [Gemini 2.5 — Implicit Caching](https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/)
+- [Gemini — Implicit Caching (blog Google Developers)](https://developers.googleblog.com/en/gemini-2-5-models-now-support-implicit-caching/)
 
 **Recherche Académique :**
 - [Semantic Compression With Large Language Models — arXiv:2304.12512](https://arxiv.org/abs/2304.12512)
