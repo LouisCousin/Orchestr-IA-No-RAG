@@ -32,15 +32,8 @@ pandas>=2.1.0
 # DOCX export
 lxml>=5.0.0
 
-# RAG / Vector database (Phase 2)
-chromadb>=0.5.0
-
-# Phase 2.5: Embeddings locaux et reranking
-fastembed>=0.2.0             # Embeddings ONNX quantized (rapide, ~300 Mo RAM)
-sentence-transformers>=3.0   # Requis par le Reranker (cross-encoder)
-# Note : sentence-transformers installe aussi torch si pas déjà présent
-# Pour une installation CPU-only plus légère :
-# pip install torch --index-url https://download.pytorch.org/whl/cpu
+# v4.0 : RAG supprimé — chromadb, fastembed, sentence-transformers retirés
+# Réduction de ~4 Go de dépendances (modèles ONNX, index HNSW, torch)
 
 # Configuration
 pyyaml>=6.0.0

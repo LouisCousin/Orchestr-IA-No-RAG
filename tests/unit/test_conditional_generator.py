@@ -1,9 +1,20 @@
 """Tests unitaires pour le générateur conditionnel."""
 
 import pytest
+from dataclasses import dataclass, field
 
 from src.core.conditional_generator import ConditionalGenerator, CoverageLevel, CoverageAssessment
-from src.core.rag_engine import RAGResult
+
+
+@dataclass
+class RAGResult:
+    """Mock de RAGResult (v4.0 : rag_engine supprimé)."""
+    section_id: str = ""
+    section_title: str = ""
+    avg_score: float = 0.0
+    num_relevant: int = 0
+    total_tokens: int = 0
+    chunks: list = field(default_factory=list)
 
 
 class TestCoverageAssessment:

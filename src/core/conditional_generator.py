@@ -1,15 +1,15 @@
-"""Génération conditionnelle de sections basée sur le score RAG (Phase 2).
+"""Génération conditionnelle de sections basée sur la couverture corpus (Phase 2).
 
 Évalue la couverture du corpus avant la génération de chaque section
 et décide si la génération doit procéder, être avertie ou reportée.
+
+v4.0 : RAG supprimé — RAGResult utilisé comme type optionnel uniquement.
 """
 
 import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
-
-from src.core.rag_engine import RAGResult
 
 logger = logging.getLogger("orchestria")
 
@@ -69,7 +69,7 @@ class ConditionalGenerator:
         self.enabled = enabled
         self._deferred_sections: list[str] = []
 
-    def assess_coverage(self, rag_result: RAGResult) -> CoverageAssessment:
+    def assess_coverage(self, rag_result) -> CoverageAssessment:
         """Évalue la couverture du corpus pour une section.
 
         Args:

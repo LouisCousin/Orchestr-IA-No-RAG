@@ -311,39 +311,7 @@ class TestEmbeddingMigration:
         assert len(embeddings[0]) == 768  # text-embedding-004 = 768 dimensions
         assert all(isinstance(v, float) for v in embeddings[0])
 
-    def test_embedding_model_in_rag_engine(self):
-        """Vérifie que le RAG engine appelle le bon modèle d'embedding."""
-        from src.core.rag_engine import RAGEngine
-
-        config = {
-            "rag": {
-                "embedding_provider": "gemini",
-                "embedding_model": "text-embedding-004",
-                "batch_size": 10,
-                "reranking_enabled": False,
-            }
-        }
-        engine = RAGEngine(config=config)
-
-        mock_client = MagicMock()
-        mock_embedding = MagicMock()
-        mock_embedding.values = [0.1, 0.2, 0.3] * 256  # 768 dims
-        mock_result = MagicMock()
-        mock_result.embeddings = [mock_embedding]
-
-        mock_types = MagicMock()
-
-        with patch.dict("sys.modules", {
-            "google": MagicMock(),
-            "google.genai": MagicMock(),
-            "google.genai.types": mock_types,
-        }):
-            with patch("src.core.rag_engine.os.environ.get", return_value="test-key"):
-                import src.core.rag_engine as rag_module
-                with patch.object(rag_module, "__builtins__", {}):
-                    with patch("google.genai.Client", return_value=mock_client):
-                        mock_client.models.embed_content.return_value = mock_result
-                        # Note : test de bas niveau — vérification de la mécanique API
+    # v4.0 : test_embedding_model_in_rag_engine supprimé (RAG engine supprimé)
 
 
 class TestFallbackToStandardMode:

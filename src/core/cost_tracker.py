@@ -1,10 +1,11 @@
-"""Estimation et suivi des coûts d'utilisation des API — Phase 5.
+"""Estimation et suivi des coûts d'utilisation des API — Phase 5 + v4.0.
 
-Gère quatre cas de calcul pour Gemini 3.1 :
+Gère cinq cas de calcul :
   CAS 1 — Tokens standard (pas de cache)
   CAS 2 — Tokens cachés (lu depuis le cache, 90% de réduction)
   CAS 3 — Tokens long-context (input > 200 000 tokens, repricing)
   CAS 4 — Stockage cache (comptabilisé à la création)
+  CAS 5 — Compression sémantique (v4.0 — coût des appels LLM de compression)
 """
 
 import logging
@@ -41,6 +42,14 @@ class CostReport:
     estimated_cost_usd: float = 0.0
     # Phase 5 — statistiques du cache Gemini
     gemini_cache_stats: dict = field(default_factory=dict)
+    # v4.0 — statistiques de compression sémantique
+    compression_stats: dict = field(default_factory=lambda: {
+        "applied": False,
+        "levels_used": [],
+        "tokens_saved": 0,
+        "compression_cost_usd": 0.0,
+        "net_savings_vs_no_compression": 0.0,
+    })
 
     def add(self, entry: CostEntry) -> None:
         self.entries.append(entry)
@@ -55,6 +64,7 @@ class CostReport:
             "total_cost_usd": round(self.total_cost_usd, 6),
             "estimated_cost_usd": round(self.estimated_cost_usd, 6),
             "gemini_cache_stats": self.gemini_cache_stats,
+            "compression_stats": self.compression_stats,
             "entries": [
                 {
                     "section_id": e.section_id,
@@ -371,6 +381,41 @@ class CostTracker:
     @property
     def report(self) -> CostReport:
         return self._report
+
+    def track_compression_cost(
+        self,
+        level: int,
+        input_tokens: int,
+        output_tokens: int,
+        model: str,
+        provider: str,
+    ) -> None:
+        """Enregistre le coût d'un appel de compression sémantique (CAS 5).
+
+        Args:
+            level: Niveau de compression (1, 2 ou 3).
+            input_tokens: Tokens en entrée de l'appel de compression.
+            output_tokens: Tokens en sortie.
+            model: Modèle utilisé pour la compression.
+            provider: Provider du modèle.
+        """
+        cost = self.calculate_cost(provider, model, input_tokens, output_tokens)
+        entry = CostEntry(
+            section_id=f"__compression_level_{level}__",
+            model=model,
+            provider=provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            task_type=f"compression_level_{level}",
+        )
+        self._report.add(entry)
+
+        stats = self._report.compression_stats
+        stats["applied"] = True
+        if level not in stats["levels_used"]:
+            stats["levels_used"].append(level)
+        stats["compression_cost_usd"] += cost
 
     def reset(self) -> None:
         """Réinitialise le suivi."""

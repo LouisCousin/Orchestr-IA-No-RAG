@@ -85,41 +85,20 @@ pdf_extraction:
   docling_timeout_seconds: 180       # Timeout extraction Docling (secondes)
 
 # ═══════════════════════════════════════════
-# Phase 2.5 — Pipeline RAG complet
+# v4.0 — Stratégie de contexte (Full Context natif)
 # ═══════════════════════════════════════════
 
-rag:
-  # ── Kill Switch (Phase 8) ──
-  enabled: true                    # false = désactive complètement le RAG (ChromaDB, embeddings, reranker)
-
-  # ── Chunking sémantique ──
-  chunking:
-    strategy: "semantic"           # "semantic" | "fixed"
-    max_chunk_tokens: 800
-    min_chunk_tokens: 100
-    overlap_sentences: 2
-
-  # ── Embeddings ──
-  embedding_mode: "local"          # "local" | "api"
-  embedding_provider: "local"      # "local" | "openai" | "gemini"
-  embedding_model: "text-embedding-3-small"  # Modèle API (si provider != "local")
-  batch_size: 512                  # Taille des lots pour embeddings API (augmentée vs 32/64)
-  local_model: "intfloat/multilingual-e5-large"
-  models_cache_dir: "./models"
-
-  # ── Recherche ──
-  top_k: 10                        # Blocs après reranking (Phase 2 : 7)
-  relevance_threshold: 0.3
-  initial_candidates: 20           # Blocs retournés par ChromaDB avant reranking
-  cosine_distance: "cosine"
-
-  # ── Reranking ──
-  reranking_enabled: true          # true | false
-  reranker_model: "cross-encoder/ms-marco-MiniLM-L-12-v2"
-
-  # ── Filtrage ──
-  filter_by_language: true         # Filtrer par langue du projet
-  filter_by_doc_type: false        # Filtrer par type de document
+context_strategy:
+  input_threshold_tokens: 650000     # Seuil input → HIGH_VOLUME_CACHE
+  output_threshold_tokens: 50000     # Seuil output estimé → HIGH_VOLUME_CACHE
+  compression_threshold_tokens: 900000  # Seuil → SEMANTIC_COMPRESSION_REQUIRED
+  compression:
+    enabled: true
+    target_tokens: 800000            # Cible post-compression
+    min_fact_preservation_ratio: 0.90
+    max_concurrent_compressions: 4
+    compression_model: "gemini-3-flash-preview"
+    compression_provider: "gemini"
 
 # Phase 2 — Génération conditionnelle
 conditional_generation:
@@ -215,8 +194,11 @@ dashboard:
 
 gemini:
   # ── Context Caching ──
-  caching_enabled: false          # Activé si provider = google et modèle 3.1-pro
+  caching_enabled: true           # v4.0 : activé par défaut pour le Full Context Cache
   cache_ttl_seconds: 7200         # TTL du cache (2h par défaut)
+  heartbeat_enabled: true         # v4.0 : renouvellement automatique du TTL
+  heartbeat_interval_seconds: 1800  # v4.0 : intervalle de heartbeat (30 min)
+  cache_min_tokens: 2048          # Minimum Gemini pour le caching
 
   # ── Thinking Level ──
   thinking_level_mode: "auto"     # "auto" | "manual"
@@ -246,6 +228,7 @@ multi_agent:
 
   # Parallélisme
   max_parallel_writers: 4          # Rédacteurs simultanés max
+  max_parallel_writers_cache_mode: 8  # v4.0 : parallélisme renforcé en mode cache
   max_parallel_verifiers: 4        # Vérificateurs simultanés max
 
   # Seuils

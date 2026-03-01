@@ -9,6 +9,9 @@ Phase 8 (v3.0) :
   - HITL : scission du workflow (run_architect_phase / run_generation_phase).
   - Circuit Breaker DAG : annulation en cascade des sections descendantes
     lorsqu'une section mère échoue.
+
+v4.0 : Architecture Full Context natif — ContextManager remplace RAG.
+       Les agents reçoivent un AgentContextPayload (corpus_text ou cache_name).
 """
 
 import asyncio
@@ -189,8 +192,9 @@ class MultiAgentOrchestrator:
         self._cost_tracker = CostTracker()
         self._done = False
         self._start_time = 0.0
-        # Phase 8 : Context Cache Gemini pour le pipeline multi-agents
+        # Phase 8 / v4.0 : Context Cache via ContextManager
         self._cache_id: Optional[str] = None
+        self._context_manager = None  # v4.0 : set externally via set_context_manager()
 
         self._initialize_agents()
 
@@ -260,13 +264,30 @@ class MultiAgentOrchestrator:
                 return "\n\n".join(parts)
         return ""
 
-    # ── Phase 8 : Context Cache ─────────────────────────────────────────────
+    # ── v4.0 : Context Manager ──────────────────────────────────────────────
+
+    def set_context_manager(self, context_manager) -> None:
+        """v4.0 : Injecte le ContextManager depuis l'Orchestrateur principal."""
+        self._context_manager = context_manager
+        if context_manager:
+            self._cache_id = context_manager.get_cache_id()
 
     def _init_context_cache(self) -> Optional[str]:
-        """Initialise le cache de contexte Gemini si le provider actif le supporte.
+        """Initialise le cache de contexte.
 
-        Retourne le cache_id (str) ou None si le caching n'est pas applicable.
+        v4.0 : Si un ContextManager est déjà injecté, utilise son cache_id.
+        Sinon, tente de créer un cache Gemini comme avant (rétrocompatibilité).
         """
+        # v4.0 : ContextManager déjà injecté
+        if self._context_manager:
+            cache_id = self._context_manager.get_cache_id()
+            if cache_id:
+                logger.info(f"[v4.0] Cache ContextManager utilisé : {cache_id}")
+                if hasattr(self.state, "cache_id"):
+                    self.state.cache_id = cache_id
+                return cache_id
+
+        # Rétrocompatibilité : initialisation directe Gemini
         state_config = getattr(self.state, "config", {})
         gemini_cfg = state_config.get("gemini", {})
         if not gemini_cfg.get("caching_enabled", False):
@@ -276,7 +297,6 @@ class MultiAgentOrchestrator:
         if not google_provider:
             return None
 
-        # Vérifier que le provider Gemini supporte le caching
         if not hasattr(google_provider, "supports_caching") or not google_provider.supports_caching():
             return None
 
@@ -292,7 +312,6 @@ class MultiAgentOrchestrator:
             model = gemini_cfg.get("model", "gemini-3.1-pro-preview")
             ttl = gemini_cfg.get("cache_ttl_seconds", 7200)
 
-            # Le system_prompt global sera inclus dans le cache
             system_prompt = (
                 "Tu es un assistant spécialisé dans la rédaction documentaire. "
                 "Le corpus ci-dessous contient les sources de référence pour "
@@ -308,7 +327,6 @@ class MultiAgentOrchestrator:
                 existing_cache_name=existing_cache,
             )
             logger.info(f"Context Cache Gemini initialisé : {cache_id}")
-            # Persister le cache_id dans le state
             if hasattr(self.state, "cache_id"):
                 self.state.cache_id = cache_id
             return cache_id
