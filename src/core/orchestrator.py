@@ -58,8 +58,8 @@ class ProjectState:
     # Phase 5 / v4.0 fields
     cache_id: Optional[str] = None                          # Nom du cache Gemini (ex: "cachedContents/abc123")
     cache_stats: dict = field(default_factory=dict)         # Statistiques du cache Gemini
-    # v4.0 — Full Context natif
-    processing_strategy: str = "standard"  # "standard" | "high_volume_cache" | "semantic_compression"
+    # v4.0 / v4.1 — Full Context natif
+    processing_strategy: str = "standard"  # "standard" | "high_volume_cache" | "semantic_compression" | "corpus_atlas"
     token_stats: dict = field(default_factory=lambda: {
         "total_input_corpus": 0,
         "estimated_output": 0,
@@ -85,6 +85,9 @@ class ProjectState:
     agent_architecture: Optional[dict] = None               # Résultat de l'Architecte
     agent_verif_reports: Optional[dict] = None              # Rapports de vérification
     agent_eval_result: Optional[dict] = None                # Score et métriques évaluateur
+    # v4.1 — Corpus Atlas
+    atlas_stats: dict = field(default_factory=dict)           # Stats de l'Atlas construit
+    document_memory: dict = field(default_factory=dict)       # DocumentMemory sérialisée
     # Phase 2 Sprint 2 — Batch API
     batch_id: Optional[str] = None                           # ID du batch en cours
     batch_generated: dict = field(default_factory=dict)      # Sections déjà générées par batch
@@ -138,6 +141,8 @@ class ProjectState:
             "agent_architecture": self.agent_architecture,
             "agent_verif_reports": self.agent_verif_reports,
             "agent_eval_result": self.agent_eval_result,
+            "atlas_stats": self.atlas_stats,
+            "document_memory": self.document_memory,
             "batch_id": self.batch_id,
             "batch_generated": self.batch_generated,
             "batch_architecture": self.batch_architecture,
@@ -190,6 +195,8 @@ class ProjectState:
             agent_architecture=data.get("agent_architecture"),
             agent_verif_reports=data.get("agent_verif_reports"),
             agent_eval_result=data.get("agent_eval_result"),
+            atlas_stats=data.get("atlas_stats", {}),
+            document_memory=data.get("document_memory", {}),
             batch_id=data.get("batch_id"),
             batch_generated=data.get("batch_generated", {}),
             batch_architecture=data.get("batch_architecture"),
@@ -675,10 +682,12 @@ class Orchestrator:
         return self.state
 
     def prepare_corpus_context(self) -> int:
-        """v4.0 : Prépare le contexte corpus (Full Context natif).
+        """v4.1 : Prépare le contexte corpus (Full Context natif).
 
         Remplace index_corpus_rag(). Calcule les tokens du corpus,
         sélectionne la stratégie, et extrait les métadonnées.
+        Si la stratégie est CORPUS_ATLAS, signale qu'un build_corpus_atlas()
+        est nécessaire avant la génération.
 
         Returns:
             Nombre total de tokens du corpus.
@@ -706,12 +715,20 @@ class Orchestrator:
             self.state.token_stats["strategy_trigger"] = trigger
 
         logger.info(
-            f"[v4.0] Corpus : {total_tokens} tokens → stratégie : {strategy.value}"
+            f"[v4.1] Corpus : {total_tokens} tokens → stratégie : {strategy.value}"
         )
         self.activity_log.info(
             f"Corpus préparé (Full Context) : {total_tokens} tokens, "
             f"stratégie : {strategy.value}"
         )
+
+        # v4.1 : signaler si Atlas requis
+        if strategy.value == "corpus_atlas":
+            self.state.token_stats["atlas_required"] = True
+            logger.info(
+                f"[v4.1] Corpus extrême ({total_tokens:,} tokens) — "
+                f"Atlas indexation requise avant génération"
+            )
 
         # 3. Extraire les métadonnées pour le citation_engine
         self._extract_metadata()
@@ -723,6 +740,103 @@ class Orchestrator:
     def index_corpus_rag(self) -> int:
         """Alias de rétrocompatibilité pour prepare_corpus_context."""
         return self.prepare_corpus_context()
+
+    async def build_corpus_atlas(self, provider=None, progress_callback=None) -> dict:
+        """v4.1 : Construit l'Atlas du corpus pour les documents extrêmes.
+
+        Doit être appelé après prepare_corpus_context() si la stratégie
+        est CORPUS_ATLAS (corpus > 3.2M tokens).
+
+        Args:
+            provider: Provider LLM pour l'indexation (défaut: self.provider).
+            progress_callback: callable(message, percent) optionnel.
+
+        Returns:
+            Dict avec les stats de l'Atlas construit.
+        """
+        if not self.state or not self.state.corpus:
+            return {"error": "Pas de corpus disponible"}
+
+        from src.core.atlas_builder import AtlasBuilder, CorpusAtlas
+
+        atlas_cfg = self._get_atlas_config()
+        indexation_provider = provider or self.provider
+        model = atlas_cfg.get("indexation_model", "gemini-3-flash-preview")
+        max_concurrent = atlas_cfg.get("max_concurrent_indexation", 4)
+
+        if progress_callback:
+            progress_callback("Construction de l'Atlas du corpus...", 0.1)
+
+        builder = AtlasBuilder(
+            provider=indexation_provider,
+            model=model,
+            max_concurrent=max_concurrent,
+            config=self.config,
+        )
+        builder.set_cost_tracker(self.cost_tracker)
+
+        atlas = await builder.build_atlas(self.state.corpus)
+
+        # Stocker dans le state
+        self.state.token_stats["atlas_tokens"] = atlas.atlas_tokens
+        self.state.token_stats["atlas_compression_ratio"] = atlas.compression_ratio
+        self.state.token_stats["atlas_doc_count"] = len(atlas.documents)
+        self.state.token_stats["atlas_indexation_cost_usd"] = atlas.indexation_cost_usd
+
+        # Persister l'atlas
+        atlas_dict = atlas.to_dict()
+        from src.utils.file_utils import save_json
+        atlas_path = self.project_dir / "atlas.json"
+        save_json(atlas_dict, atlas_path)
+
+        self.activity_log.info(
+            f"Atlas construit : {len(atlas.documents)} fiches, "
+            f"~{atlas.atlas_tokens:,} tokens "
+            f"(ratio {atlas.compression_ratio:.1f}:1, "
+            f"coût ${atlas.indexation_cost_usd:.4f})"
+        )
+
+        if progress_callback:
+            progress_callback("Atlas construit.", 1.0)
+
+        self.save_state()
+        return {
+            "documents_indexed": len(atlas.documents),
+            "atlas_tokens": atlas.atlas_tokens,
+            "compression_ratio": round(atlas.compression_ratio, 1),
+            "indexation_cost_usd": round(atlas.indexation_cost_usd, 4),
+            "contradictions_found": len(atlas.cross_index.contradictions),
+        }
+
+    def load_corpus_atlas(self):
+        """Charge un Atlas précédemment construit depuis le disque.
+
+        Returns:
+            CorpusAtlas ou None si non trouvé.
+        """
+        from src.core.atlas_builder import CorpusAtlas
+        from src.utils.file_utils import load_json
+
+        atlas_path = self.project_dir / "atlas.json"
+        if not atlas_path.exists():
+            return None
+
+        try:
+            data = load_json(atlas_path)
+            return CorpusAtlas.from_dict(data)
+        except Exception as e:
+            logger.warning(f"Échec chargement Atlas : {e}")
+            return None
+
+    def _get_atlas_config(self) -> dict:
+        """Retourne la configuration Atlas avec valeurs par défaut."""
+        return self.config.get("corpus_atlas", {
+            "indexation_model": "gemini-3-flash-preview",
+            "max_concurrent_indexation": 4,
+            "top_k_documents": 5,
+            "max_top_k_tokens": 500_000,
+            "document_memory_max_tokens": 50_000,
+        })
 
     def _extract_metadata(self) -> None:
         """Extrait les métadonnées bibliographiques pour le citation_engine.

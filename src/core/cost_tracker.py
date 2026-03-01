@@ -1,11 +1,12 @@
-"""Estimation et suivi des coûts d'utilisation des API — Phase 5 + v4.0.
+"""Estimation et suivi des coûts d'utilisation des API — Phase 5 + v4.1.
 
-Gère cinq cas de calcul :
+Gère six cas de calcul :
   CAS 1 — Tokens standard (pas de cache)
   CAS 2 — Tokens cachés (lu depuis le cache, 90% de réduction)
   CAS 3 — Tokens long-context (input > 200 000 tokens, repricing)
   CAS 4 — Stockage cache (comptabilisé à la création)
   CAS 5 — Compression sémantique (v4.0 — coût des appels LLM de compression)
+  CAS 6 — Indexation Atlas (v4.1 — coût des appels LLM d'indexation par document)
 """
 
 import logging
@@ -416,6 +417,39 @@ class CostTracker:
         if level not in stats["levels_used"]:
             stats["levels_used"].append(level)
         stats["compression_cost_usd"] += cost
+
+    def track_atlas_indexation(
+        self,
+        source_file: str,
+        input_tokens: int,
+        output_tokens: int,
+        model: str,
+        provider: str,
+    ) -> float:
+        """Enregistre le coût d'indexation d'un document pour l'Atlas (CAS 6).
+
+        Args:
+            source_file: Nom du fichier source indexé.
+            input_tokens: Tokens en entrée de l'appel d'indexation.
+            output_tokens: Tokens en sortie.
+            model: Modèle utilisé pour l'indexation.
+            provider: Provider du modèle.
+
+        Returns:
+            Coût de l'indexation en USD.
+        """
+        cost = self.calculate_cost(provider, model, input_tokens, output_tokens)
+        entry = CostEntry(
+            section_id=f"__atlas_index__{source_file}",
+            model=model,
+            provider=provider,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            task_type="atlas_indexation",
+        )
+        self._report.add(entry)
+        return cost
 
     def reset(self) -> None:
         """Réinitialise le suivi."""

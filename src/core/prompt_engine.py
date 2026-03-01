@@ -90,6 +90,36 @@ PLAN_GENERATION_PROMPT = """À partir de l'objectif suivant, génère un plan st
 """
 
 
+# v4.1 — Template Atlas pour la génération de section
+ATLAS_SECTION_PROMPT_TEMPLATE = """═══ OBJECTIF DU DOCUMENT ═══
+{objective}
+
+═══ SECTION À RÉDIGER ═══
+Titre : {section_title}
+Niveau hiérarchique : {section_level}
+{section_description}
+
+═══ CONSIGNES DE LONGUEUR ═══
+{length_instruction}
+
+{atlas_context}
+
+{memory_context}
+
+═══ DOCUMENTS SOURCES SÉLECTIONNÉS (Top-K) ═══
+{top_k_corpus}
+
+═══ INSTRUCTIONS ═══
+Rédige le contenu de cette section en respectant les consignes ci-dessus.
+L'Atlas ci-dessus donne une vue d'ensemble du corpus ({atlas_doc_count} documents).
+Les documents sources ci-dessous sont les plus pertinents pour cette section.
+Base-toi EXCLUSIVEMENT sur ces documents pour toute information factuelle.
+Le texte doit être structuré, professionnel et directement exploitable dans un document final.
+N'inclus pas le titre de la section dans ta réponse (il sera ajouté automatiquement).
+N'utilise pas de titres Markdown (# ou ##). Si tu as besoin de sous-titres internes, utilise le format en gras : **Sous-titre**.
+"""
+
+
 REFINEMENT_PROMPT_TEMPLATE = """═══ OBJECTIF DU DOCUMENT ═══
 {objective}
 
@@ -417,6 +447,69 @@ class PromptEngine:
             return self.glossary_engine.format_for_prompt(terms)
         except Exception:
             return ""
+
+    def build_atlas_section_prompt(
+        self,
+        section: PlanSection,
+        plan: NormalizedPlan,
+        atlas_text: str,
+        top_k_corpus_text: str,
+        memory_text: str = "",
+        atlas_doc_count: int = 0,
+        target_pages: Optional[float] = None,
+        extra_instruction: str = "",
+    ) -> str:
+        """Construit le prompt Atlas pour générer une section (v4.1).
+
+        Injecte l'Atlas, les documents Top-K, et la mémoire narrative
+        dans un prompt adapté aux documents extrêmes.
+        """
+        description = ""
+        if section.description:
+            description = f"Description : {section.description}"
+
+        if section.page_budget:
+            length_instruction = (
+                f"Environ {section.page_budget} page(s) "
+                f"({int(section.page_budget * 400)} mots approximativement)."
+            )
+        elif target_pages:
+            length_instruction = (
+                f"Ajuste la longueur proportionnellement à la taille cible "
+                f"du document ({target_pages} pages)."
+            )
+        else:
+            length_instruction = "Longueur adaptée au contenu à couvrir."
+
+        atlas_context = atlas_text if atlas_text else "Aucun Atlas disponible."
+        memory_context = memory_text if memory_text else ""
+
+        top_k_corpus = top_k_corpus_text if top_k_corpus_text else (
+            "Aucun document source sélectionné. "
+            "Signale chaque point nécessitant une source avec le marqueur "
+            "{{NEEDS_SOURCE: [description du point]}}."
+        )
+
+        prompt = ATLAS_SECTION_PROMPT_TEMPLATE.format(
+            objective=plan.objective or plan.title or "Document professionnel",
+            section_title=section.title,
+            section_level=section.level,
+            section_description=description,
+            length_instruction=length_instruction,
+            atlas_context=atlas_context,
+            memory_context=memory_context,
+            top_k_corpus=top_k_corpus,
+            atlas_doc_count=atlas_doc_count,
+        )
+
+        glossary_block = self._build_glossary_block(section.title)
+        if glossary_block:
+            prompt += f"\n\n{glossary_block}\n"
+
+        if extra_instruction:
+            prompt += f"\n\n═══ CONSIGNE SUPPLÉMENTAIRE ═══\n{extra_instruction}\n"
+
+        return prompt
 
     @staticmethod
     def _format_corpus_chunks_grouped(corpus_chunks: list) -> str:

@@ -92,6 +92,7 @@ context_strategy:
   input_threshold_tokens: 650000     # Seuil input → HIGH_VOLUME_CACHE
   output_threshold_tokens: 50000     # Seuil output estimé → HIGH_VOLUME_CACHE
   compression_threshold_tokens: 900000  # Seuil → SEMANTIC_COMPRESSION_REQUIRED
+  atlas_threshold_tokens: 3200000    # v4.1 : Seuil → CORPUS_ATLAS (documents extrêmes)
   compression:
     enabled: true
     target_tokens: 800000            # Cible post-compression
@@ -99,6 +100,35 @@ context_strategy:
     max_concurrent_compressions: 4
     compression_model: "gemini-3-flash-preview"
     compression_provider: "gemini"
+
+# ═══════════════════════════════════════════
+# v4.1 — Corpus Atlas (documents extrêmes)
+# ═══════════════════════════════════════════
+
+corpus_atlas:
+  # Modèle pour l'indexation des documents (rapide et économique)
+  indexation_model: "gemini-3-flash-preview"
+  indexation_provider: "google"
+
+  # Parallélisme : nombre de documents indexés simultanément
+  max_concurrent_indexation: 4
+
+  # Tokens max pour indexer un seul document (tronqué au-delà)
+  max_doc_tokens_for_indexation: 800000
+
+  # Sélection Top-K : documents injectés par section
+  top_k_documents: 5
+  max_top_k_tokens: 500000           # Budget tokens pour les docs Top-K
+
+  # DocumentMemory : mémoire narrative cumulative
+  document_memory_max_tokens: 50000  # Budget tokens pour la mémoire
+
+  # Scoring Top-K : pondérations
+  scoring_weights:
+    thematic: 0.4
+    entity: 0.3
+    factual: 0.2
+    contradiction: 0.1
 
 # Phase 2 — Génération conditionnelle
 conditional_generation:

@@ -107,6 +107,40 @@ class TestStrategySelector:
         assert self.selector.estimate_output_tokens(None) == 0
 
 
+    def test_strategy_atlas_threshold(self):
+        """Corpus > 3.2M tokens → CORPUS_ATLAS."""
+        strategy = self.selector.select_strategy(corpus_tokens=4_000_000)
+        assert strategy == GenerationStrategy.CORPUS_ATLAS
+
+    def test_strategy_atlas_at_threshold(self):
+        """Corpus == 3.2M tokens → CORPUS_ATLAS."""
+        strategy = self.selector.select_strategy(corpus_tokens=3_200_000)
+        assert strategy == GenerationStrategy.CORPUS_ATLAS
+
+    def test_strategy_atlas_just_below(self):
+        """Corpus just below 3.2M → SEMANTIC_COMPRESSION_REQUIRED."""
+        strategy = self.selector.select_strategy(corpus_tokens=3_199_999)
+        assert strategy == GenerationStrategy.SEMANTIC_COMPRESSION_REQUIRED
+
+    def test_strategy_atlas_report(self):
+        """Atlas trigger in report."""
+        self.selector.select_strategy(corpus_tokens=5_000_000)
+        report = self.selector.get_strategy_report()
+        assert report["strategy"] == "corpus_atlas"
+        assert report["reason"] == "atlas_threshold"
+
+    def test_custom_atlas_threshold_from_config(self):
+        """Custom atlas threshold from config."""
+        config = {
+            "context_strategy": {
+                "atlas_threshold_tokens": 2_000_000,
+            }
+        }
+        selector = StrategySelector(config=config)
+        strategy = selector.select_strategy(corpus_tokens=2_500_000)
+        assert strategy == GenerationStrategy.CORPUS_ATLAS
+
+
 class TestGenerationStrategy:
     """Tests de l'enum GenerationStrategy."""
 
@@ -118,3 +152,6 @@ class TestGenerationStrategy:
 
     def test_compression_value(self):
         assert GenerationStrategy.SEMANTIC_COMPRESSION_REQUIRED.value == "semantic_compression"
+
+    def test_atlas_value(self):
+        assert GenerationStrategy.CORPUS_ATLAS.value == "corpus_atlas"

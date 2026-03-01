@@ -1,8 +1,9 @@
-"""Gestionnaire de contexte unifié pour tous les agents — v4.0.
+"""Gestionnaire de contexte unifié pour tous les agents — v4.1.
 
 Remplace RAGEngine. Gère le contexte complet du corpus pour chaque agent,
 soit par injection directe (mode STANDARD), soit via un cache Gemini
-(mode HIGH_VOLUME_CACHE).
+(mode HIGH_VOLUME_CACHE), soit via un Atlas structuré + Top-K
+(mode CORPUS_ATLAS pour les documents extrêmes > 3.2M tokens).
 """
 
 import logging
@@ -22,15 +23,20 @@ class AgentContextPayload:
     corpus_text: Optional[str] = None  # Mode STANDARD
     cache_name: Optional[str] = None   # Mode HIGH_VOLUME_CACHE
     strategy: str = "standard"
+    # v4.1 — Mode CORPUS_ATLAS
+    atlas_text: Optional[str] = None         # Atlas formaté pour le prompt
+    top_k_corpus_text: Optional[str] = None  # Documents Top-K sélectionnés
+    memory_text: Optional[str] = None        # DocumentMemory formaté
 
 
 class ContextManager:
     """Interface unifiée d'accès au corpus pour tous les agents.
 
-    Remplace RAGEngine. Trois modes :
+    Remplace RAGEngine. Quatre modes :
       - STANDARD : corpus XML en mémoire, injecté dans chaque appel
       - HIGH_VOLUME_CACHE : cache Gemini, référencé par cache_name
       - SEMANTIC_COMPRESSION_REQUIRED : compression puis cache
+      - CORPUS_ATLAS : Atlas structuré + sélection Top-K par section
     """
 
     def __init__(self, strategy: GenerationStrategy, config: dict | None = None):
@@ -41,6 +47,10 @@ class ContextManager:
         self._corpus_xml: Optional[str] = None
         self._cache_name: Optional[str] = None
         self._created_at: Optional[str] = None
+        # v4.1 — Atlas
+        self._atlas = None          # CorpusAtlas
+        self._corpus = None         # StructuredCorpus (pour Top-K retrieval)
+        self._document_memory = None  # DocumentMemory
 
     async def prepare(
         self,
@@ -55,6 +65,17 @@ class ContextManager:
             system_instruction: System prompt global stable.
             plan: NormalizedPlan (optionnel, pour enrichir le cache).
         """
+        # Conserver le corpus pour le mode Atlas (Top-K retrieval)
+        self._corpus = corpus
+
+        if self.strategy == GenerationStrategy.CORPUS_ATLAS:
+            # Mode Atlas : pas de XML complet, pas de cache
+            # L'Atlas est construit séparément via set_atlas()
+            logger.info(
+                "[ContextManager] Mode CORPUS_ATLAS — contexte via Atlas + Top-K"
+            )
+            return
+
         # Formater le corpus en XML structuré
         self._corpus_xml = self._format_corpus_xml(corpus)
 
@@ -133,16 +154,22 @@ class ContextManager:
         self,
         section_id: Optional[str] = None,
         task_type: str = "generation",
+        section_plan: Optional[dict] = None,
     ) -> AgentContextPayload:
         """Retourne le payload de contexte pour un agent.
 
         Args:
             section_id: ID de la section (pour logging).
             task_type: Type de tâche ("generation", "verification", etc.).
+            section_plan: Infos de la section (titre, thèmes, entités) pour Top-K.
 
         Returns:
-            AgentContextPayload avec soit corpus_text soit cache_name.
+            AgentContextPayload avec soit corpus_text, cache_name, ou atlas.
         """
+        # v4.1 — Mode Atlas
+        if self.strategy == GenerationStrategy.CORPUS_ATLAS and self._atlas:
+            return self._prepare_atlas_context(section_id, section_plan)
+
         if self._cache_name:
             return AgentContextPayload(
                 corpus_text=None,
@@ -154,6 +181,119 @@ class ContextManager:
             cache_name=None,
             strategy="standard",
         )
+
+    # ── v4.1 : Atlas support ─────────────────────────────────────────────────
+
+    def set_atlas(self, atlas) -> None:
+        """Injecte un CorpusAtlas construit par l'Orchestrateur."""
+        self._atlas = atlas
+
+    def set_document_memory(self, memory) -> None:
+        """Injecte la DocumentMemory pour la cohérence narrative."""
+        self._document_memory = memory
+
+    def get_atlas(self):
+        """Retourne le CorpusAtlas si disponible."""
+        return self._atlas
+
+    def _prepare_atlas_context(
+        self,
+        section_id: Optional[str],
+        section_plan: Optional[dict],
+    ) -> AgentContextPayload:
+        """Construit le payload Atlas avec Top-K selection.
+
+        Budget tokens par section :
+          - Atlas formaté : ~200K tokens
+          - Top-K documents : ~500K tokens
+          - DocumentMemory : ~50K tokens
+          - Prompt + instructions : ~10K tokens
+          Total : ~760K (< 1M fenêtre Gemini)
+        """
+        from src.core.atlas_builder import AtlasBuilder
+
+        atlas_cfg = self._config.get("corpus_atlas", {})
+        top_k = atlas_cfg.get("top_k_documents", 5)
+        max_top_k_tokens = atlas_cfg.get("max_top_k_tokens", 500_000)
+
+        # Atlas formaté
+        atlas_text = self._atlas.format_for_prompt(max_tokens=200_000)
+
+        # Top-K selection basé sur le plan de la section
+        top_k_text = ""
+        if section_plan and self._corpus:
+            section_title = section_plan.get("title", "")
+            section_themes = section_plan.get("themes", [])
+            section_entities = section_plan.get("entities", [])
+
+            top_k_sources = AtlasBuilder.select_top_k_documents(
+                atlas=self._atlas,
+                section_title=section_title,
+                section_themes=section_themes,
+                section_entities=section_entities,
+                k=top_k,
+            )
+
+            if top_k_sources:
+                top_k_text = self._extract_top_k_text(
+                    top_k_sources, max_top_k_tokens
+                )
+
+        # DocumentMemory
+        memory_text = ""
+        if self._document_memory:
+            memory_text = self._document_memory.format_for_prompt()
+
+        return AgentContextPayload(
+            corpus_text=None,
+            cache_name=None,
+            strategy="corpus_atlas",
+            atlas_text=atlas_text,
+            top_k_corpus_text=top_k_text,
+            memory_text=memory_text,
+        )
+
+    def _extract_top_k_text(
+        self,
+        source_files: list[str],
+        max_tokens: int,
+    ) -> str:
+        """Extrait le texte des documents Top-K depuis le corpus original."""
+        if not self._corpus or not hasattr(self._corpus, "chunks"):
+            return ""
+
+        # Regrouper les chunks par source
+        chunks_by_source: dict[str, list] = {}
+        for chunk in self._corpus.chunks:
+            source = getattr(chunk, "source_file", "")
+            if source in source_files:
+                chunks_by_source.setdefault(source, []).append(chunk)
+
+        parts = []
+        token_budget = max_tokens
+        for source in source_files:
+            if source not in chunks_by_source:
+                continue
+
+            doc_parts = [f"═══ DOCUMENT : {source} ═══"]
+            for chunk in chunks_by_source[source]:
+                text = getattr(chunk, "text", "")
+                chunk_tokens = getattr(chunk, "token_estimate", len(text) // 4)
+                if token_budget - chunk_tokens < 0:
+                    # Tronquer le dernier chunk
+                    remaining_chars = token_budget * 4
+                    if remaining_chars > 100:
+                        doc_parts.append(text[:remaining_chars] + "...")
+                    token_budget = 0
+                    break
+                doc_parts.append(text)
+                token_budget -= chunk_tokens
+
+            parts.append("\n".join(doc_parts))
+            if token_budget <= 0:
+                break
+
+        return "\n\n".join(parts)
 
     async def cleanup(self) -> None:
         """Supprime le cache Gemini si actif et arrête le heartbeat."""

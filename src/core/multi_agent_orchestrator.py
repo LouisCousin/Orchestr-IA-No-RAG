@@ -528,6 +528,12 @@ class MultiAgentOrchestrator:
             "description": "Analyse du plan et des dépendances",
         }
 
+        # v4.1 : si Atlas disponible via ContextManager, passer l'Atlas
+        if self._context_manager and hasattr(self._context_manager, 'get_atlas'):
+            atlas = self._context_manager.get_atlas()
+            if atlas:
+                task["atlas_text"] = atlas.format_for_prompt(max_tokens=100_000)
+
         self._log_timeline("architecte", "start", "Analyse du plan")
         await self._emit_event({"type": "agent_start", "agent": "architecte", "message": "Analyse du plan"})
         result = await agent.run(task)
@@ -603,6 +609,13 @@ class MultiAgentOrchestrator:
         # Phase 8 : passer cache_id si disponible, sinon corpus_text
         corpus_text = self._get_corpus_text() if not self._cache_id else ""
 
+        # v4.1 : détecter le mode Atlas
+        is_atlas_mode = (
+            self._context_manager
+            and hasattr(self._context_manager, 'get_atlas')
+            and self._context_manager.get_atlas() is not None
+        )
+
         completed: set[str] = set()
         in_progress: set[str] = set()
         generated: dict[str, str] = {}
@@ -642,6 +655,24 @@ class MultiAgentOrchestrator:
                     "prerequisite_sections": prereqs,
                     "description": f"Rédaction {sid}",
                 }
+
+                # v4.1 : en mode Atlas, injecter le contexte Atlas + Top-K
+                if is_atlas_mode:
+                    section_plan = {
+                        "title": section_info.get("title", sid),
+                        "themes": section_info.get("themes", []),
+                        "entities": section_info.get("entities", []),
+                    }
+                    atlas_payload = self._context_manager.get_context_for_agent(
+                        section_id=sid,
+                        task_type="generation",
+                        section_plan=section_plan,
+                    )
+                    task_data["atlas_text"] = atlas_payload.atlas_text or ""
+                    task_data["top_k_corpus_text"] = atlas_payload.top_k_corpus_text or ""
+                    task_data["memory_text"] = atlas_payload.memory_text or ""
+                    # En mode Atlas, le corpus_text est remplacé par Top-K
+                    task_data["corpus_text"] = atlas_payload.top_k_corpus_text or ""
 
                 pending_tasks[sid] = asyncio.create_task(
                     self._execute_writer(sid, task_data)
@@ -691,6 +722,14 @@ class MultiAgentOrchestrator:
                     generated[sid] = result.content
                     await self.bus.store_section(sid, result.content)
                     section_summaries[sid] = result.content[:500]
+
+                    # v4.1 : alimenter DocumentMemory en mode Atlas
+                    if is_atlas_mode and self._context_manager._document_memory:
+                        self._context_manager._document_memory.add_section(
+                            section_id=sid,
+                            section_title=sections_data.get(sid, {}).get("title", sid),
+                            content=result.content,
+                        )
                 else:
                     logger.warning(f"Rédaction échouée pour {sid}: {result.error}")
                     generated[sid] = f"{{{{GENERATION_FAILED}}}}\n{result.error or ''}"

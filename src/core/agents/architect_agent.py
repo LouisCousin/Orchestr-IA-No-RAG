@@ -65,6 +65,7 @@ class ArchitectAgent(BaseAgent):
         plan = task.get("plan")
         corpus_text = task.get("corpus_text", "")
         objective = task.get("objective", "")
+        atlas_text = task.get("atlas_text", "")
 
         if not plan:
             return AgentResult(
@@ -76,8 +77,12 @@ class ArchitectAgent(BaseAgent):
         # Construire le texte du plan
         plan_text = self._format_plan(plan)
 
-        # Limiter le corpus pour l'Architecte (vue globale)
-        corpus_preview = corpus_text[:50000] if len(corpus_text) > 50000 else corpus_text
+        # v4.1 : si un Atlas est fourni, l'utiliser à la place du corpus brut
+        if atlas_text:
+            corpus_preview = atlas_text[:100000]
+        else:
+            # Limiter le corpus pour l'Architecte (vue globale)
+            corpus_preview = corpus_text[:50000] if len(corpus_text) > 50000 else corpus_text
 
         prompt = ARCHITECT_PROMPT_TEMPLATE.format(
             plan_text=plan_text,

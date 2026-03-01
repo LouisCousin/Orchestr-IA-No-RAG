@@ -1,13 +1,16 @@
-"""Sélection dynamique de la stratégie de génération — v4.0.
+"""Sélection dynamique de la stratégie de génération — v4.1.
 
-Décision automatique entre trois modes :
+Décision automatique entre quatre modes :
   - STANDARD : injection directe du corpus dans chaque appel LLM
   - HIGH_VOLUME_CACHE : cache Gemini explicite (corpus ≥ 650K OU output ≥ 50K tokens)
   - SEMANTIC_COMPRESSION_REQUIRED : compression sémantique avant cache (corpus > 900K)
+  - CORPUS_ATLAS : indexation structurée + Top-K selection (corpus > 3.2M tokens)
 
-Deux seuils déclencheurs :
-  1. Post-acquisition corpus (Input Check) : ≥ 650K tokens → HIGH_VOLUME_CACHE
-  2. Post-planification (Output Check) : ≥ 50K tokens estimés → HIGH_VOLUME_CACHE
+Trois seuils déclencheurs (Input Check) :
+  1. ≥ 3.2M tokens → CORPUS_ATLAS (priorité la plus haute)
+  2. ≥ 900K tokens → SEMANTIC_COMPRESSION_REQUIRED
+  3. ≥ 650K tokens → HIGH_VOLUME_CACHE
+  + Post-planification (Output Check) : ≥ 50K tokens estimés → HIGH_VOLUME_CACHE
 """
 
 import logging
@@ -21,6 +24,7 @@ class GenerationStrategy(Enum):
     STANDARD = "standard"
     HIGH_VOLUME_CACHE = "high_volume_cache"
     SEMANTIC_COMPRESSION_REQUIRED = "semantic_compression"
+    CORPUS_ATLAS = "corpus_atlas"
 
 
 class StrategySelector:
@@ -29,6 +33,7 @@ class StrategySelector:
     THRESHOLD_INPUT_TOKENS: int = 650_000
     THRESHOLD_OUTPUT_TOKENS: int = 50_000
     COMPRESSION_THRESHOLD_TOKENS: int = 900_000
+    ATLAS_THRESHOLD_TOKENS: int = 3_200_000
 
     def __init__(self, config: dict | None = None):
         if config:
@@ -41,6 +46,9 @@ class StrategySelector:
             )
             self.COMPRESSION_THRESHOLD_TOKENS = ctx.get(
                 "compression_threshold_tokens", self.COMPRESSION_THRESHOLD_TOKENS
+            )
+            self.ATLAS_THRESHOLD_TOKENS = ctx.get(
+                "atlas_threshold_tokens", self.ATLAS_THRESHOLD_TOKENS
             )
         self._last_report: dict | None = None
 
@@ -60,7 +68,10 @@ class StrategySelector:
         """
         trigger = None
 
-        if corpus_tokens >= self.COMPRESSION_THRESHOLD_TOKENS:
+        if corpus_tokens >= self.ATLAS_THRESHOLD_TOKENS:
+            strategy = GenerationStrategy.CORPUS_ATLAS
+            trigger = "atlas_threshold"
+        elif corpus_tokens >= self.COMPRESSION_THRESHOLD_TOKENS:
             strategy = GenerationStrategy.SEMANTIC_COMPRESSION_REQUIRED
             trigger = "compression_threshold"
         elif corpus_tokens >= self.THRESHOLD_INPUT_TOKENS:
