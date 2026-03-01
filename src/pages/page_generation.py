@@ -298,15 +298,11 @@ def _run_generation(state, provider, tracker):
             extractor = CorpusExtractor()
             state.corpus = extractor.extract_corpus(corpus_dir)
 
-    # Initialiser le RAG et indexer le corpus
+    # v4.0 : Préparer le contexte corpus (Full Context natif)
     if state.corpus:
-        orchestrator._init_rag()
-        if orchestrator.rag_engine:
-            orchestrator._init_conditional_generator()
-            if orchestrator.rag_engine.indexed_count == 0:
-                with st.spinner("Indexation du corpus dans ChromaDB..."):
-                    count = orchestrator.index_corpus_rag()
-                    st.info(f"Corpus indexé : {count} blocs dans ChromaDB")
+        with st.spinner("Préparation du contexte corpus..."):
+            total_tokens = orchestrator.prepare_corpus_context()
+            st.info(f"Corpus préparé : {total_tokens} tokens (Full Context)")
 
     # Initialize Phase 3 engines (glossary, persona, persistent instructions,
     # citations, etc.) BEFORE the generation loop so that the PromptEngine
@@ -341,32 +337,10 @@ def _run_generation(state, provider, tracker):
             task = "Raffinement" if is_refinement else "Génération"
             status_area.info(f"{task} de **{section.id} {section.title}**...")
 
+            # v4.0 : Full Context — le corpus complet est accessible
             corpus_chunks = []
             extra_instruction = ""
-
-            if orchestrator.rag_engine and orchestrator.rag_engine.indexed_count > 0:
-                rag_result = orchestrator.rag_engine.search_for_section(
-                    section.id, section.title, section.description or ""
-                )
-                # Pass RAG result dicts directly — the prompt engine's
-                # _get_chunk_attr already handles both dicts and objects.
-                corpus_chunks = rag_result.chunks
-
-                if orchestrator.conditional_generator and not is_refinement:
-                    assessment = orchestrator.conditional_generator.assess_coverage(rag_result)
-                    state.rag_coverage[section.id] = assessment.to_dict()
-
-                    if not assessment.should_generate:
-                        section.status = "deferred"
-                        if section.id not in state.deferred_sections:
-                            state.deferred_sections.append(section.id)
-                        activity_log.warning(assessment.message, section=section.id)
-                        save_json(PROJECTS_DIR / project_id / "state.json", state.to_dict())
-                        continue
-
-                    if assessment.extra_prompt_instruction:
-                        extra_instruction = assessment.extra_prompt_instruction
-            elif state.corpus:
+            if state.corpus:
                 corpus_chunks = state.corpus.get_chunks_for_section(section.title)
 
             if is_refinement:

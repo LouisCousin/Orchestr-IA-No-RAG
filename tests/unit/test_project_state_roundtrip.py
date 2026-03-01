@@ -59,7 +59,6 @@ def state_with_plan(full_config):
         current_section_index=2,
         current_pass=1,
         deferred_sections=["2"],
-        rag_coverage={"1": {"level": "sufficient", "avg_score": 0.7, "num_relevant_blocks": 5}},
     )
     return state
 
@@ -158,11 +157,13 @@ class TestProjectStateRoundTrip:
         restored = ProjectState.from_dict(data)
         assert restored.deferred_sections == ["2"]
 
-    def test_roundtrip_preserves_rag_coverage(self, state_with_plan):
+    def test_roundtrip_preserves_v4_fields(self, state_with_plan):
+        """v4.0 : vérifie que les nouveaux champs survivent au round-trip."""
         data = state_with_plan.to_dict()
         restored = ProjectState.from_dict(data)
-        assert "1" in restored.rag_coverage
-        assert restored.rag_coverage["1"]["level"] == "sufficient"
+        assert restored.processing_strategy == "standard"
+        assert restored.token_stats["total_input_corpus"] == 0
+        assert restored.cache_lifecycle["cache_name"] is None
 
     def test_roundtrip_preserves_timestamps(self, state_with_plan):
         data = state_with_plan.to_dict()

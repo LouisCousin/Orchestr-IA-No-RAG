@@ -2,9 +2,25 @@
 
 import pytest
 import os
+from dataclasses import dataclass
 
 from src.core.metadata_store import MetadataStore, DocumentMetadata
-from src.core.semantic_chunker import Chunk
+
+
+@dataclass
+class Chunk:
+    """Mock de Chunk (v4.0 : semantic_chunker supprimé)."""
+    doc_id: str = ""
+    text: str = ""
+    page_number: int = 0
+    section_title: str = ""
+    chunk_index: int = 0
+    token_count: int = 0
+    chunk_id: str = ""
+
+    def __post_init__(self):
+        if not self.chunk_id:
+            self.chunk_id = f"{self.doc_id}_{self.chunk_index}"
 
 
 @pytest.fixture

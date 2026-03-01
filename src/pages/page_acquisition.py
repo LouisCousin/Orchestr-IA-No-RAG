@@ -746,29 +746,7 @@ def _render_rag_inspection(project_dir: Path):
             except Exception as e:
                 st.warning(f"Impossible de charger les chunks : {e}")
 
-        # Recherche test dans le RAG
+        # v4.0 : RAG supprimé — la recherche vectorielle est remplacée par Full Context
         if has_chromadb and chroma_count > 0:
-            st.markdown("**Recherche test**")
-            test_query = st.text_input("Requête de test", placeholder="Saisissez un terme pour tester la recherche RAG...")
-            if test_query and st.button("Tester la recherche"):
-                try:
-                    from src.core.rag_engine import RAGEngine
-                    config = st.session_state.project_state.config if st.session_state.get("project_state") else {}
-                    engine = RAGEngine(
-                        persist_dir=chromadb_dir,
-                        config=config,
-                        top_k=config.get("rag", {}).get("top_k", 10),
-                        relevance_threshold=config.get("rag", {}).get("relevance_threshold", 0.3),
-                    )
-                    result = engine.search(test_query, top_k=5)
-                    if result.chunks:
-                        for i, chunk in enumerate(result.chunks):
-                            similarity = chunk.get("similarity", 0)
-                            source = chunk.get("source_file", "inconnu")
-                            text = chunk.get("text", "")
-                            st.markdown(f"**Résultat {i+1}** (score: {similarity:.3f}) — {source}")
-                            st.text(text[:300] + ("..." if len(text) > 300 else ""))
-                    else:
-                        st.info("Aucun résultat trouvé.")
-                except Exception as e:
-                    st.error(f"Erreur de recherche : {e}")
+            st.info("v4.0 : L'architecture Full Context remplace la recherche vectorielle RAG. "
+                    "L'intégralité du corpus est injectée dans le contexte du LLM.")

@@ -1,12 +1,14 @@
 """Orchestration du pipeline de génération avec pipelining asynchrone.
 
-Phase 2 : mode agentique, passes multiples, mode batch, RAG.
+Phase 2 : mode agentique, passes multiples, mode batch.
 Phase 3 : intelligence du pipeline — qualité, factcheck, glossaire,
            personas, citations, feedback loop, HITL journal.
 Phase 4 (Perf) : pipelining — la génération de la section N+1 démarre
            pendant que l'évaluation post-génération de la section N tourne
            en arrière-plan via un ThreadPoolExecutor. Un verrou (Lock)
            protège save_state et les mutations de self.state.
+Phase 4.0 (v4) : suppression du RAG, architecture Full Context natif.
+           StrategySelector → ContextManager → Agents avec AgentContextPayload.
 """
 
 import json
@@ -46,7 +48,6 @@ class ProjectState:
     config: dict = field(default_factory=dict)
     cost_report: dict = field(default_factory=dict)
     deferred_sections: list[str] = field(default_factory=list)
-    rag_coverage: dict = field(default_factory=dict)  # section_id → coverage assessment dict
     # Phase 3 fields
     quality_reports: dict = field(default_factory=dict)   # section_id → quality report dict
     factcheck_reports: dict = field(default_factory=dict)  # section_id → factcheck report dict
@@ -54,9 +55,26 @@ class ProjectState:
     personas: dict = field(default_factory=dict)           # personas config
     citations: dict = field(default_factory=dict)          # citations resolved
     feedback_history: list = field(default_factory=list)   # feedback loop entries
-    # Phase 5 fields
+    # Phase 5 / v4.0 fields
     cache_id: Optional[str] = None                          # Nom du cache Gemini (ex: "cachedContents/abc123")
     cache_stats: dict = field(default_factory=dict)         # Statistiques du cache Gemini
+    # v4.0 — Full Context natif
+    processing_strategy: str = "standard"  # "standard" | "high_volume_cache" | "semantic_compression"
+    token_stats: dict = field(default_factory=lambda: {
+        "total_input_corpus": 0,
+        "estimated_output": 0,
+        "strategy_trigger": None,
+        "compression_applied": False,
+        "compression_ratio": None,
+    })
+    cache_lifecycle: dict = field(default_factory=lambda: {
+        "cache_name": None,
+        "created_at": None,
+        "expires_at": None,
+        "last_renewed_at": None,
+        "renewal_count": 0,
+        "deleted_at": None,
+    })
     # Phase 6 — GitHub
     github_repo_url: Optional[str] = None                  # URL du dépôt acquis
     github_branch: Optional[str] = None                    # Branche utilisée
@@ -80,7 +98,7 @@ class ProjectState:
         self.updated_at = datetime.now().isoformat()
 
     def to_dict(self) -> dict:
-        # Serialize corpus source files for reload detection (full text is in ChromaDB)
+        # Serialize corpus source files for reload detection
         corpus_info = None
         if self.corpus:
             corpus_info = {
@@ -101,7 +119,6 @@ class ProjectState:
             "config": self.config,
             "cost_report": self.cost_report,
             "deferred_sections": self.deferred_sections,
-            "rag_coverage": self.rag_coverage,
             "quality_reports": self.quality_reports,
             "factcheck_reports": self.factcheck_reports,
             "glossary": self.glossary,
@@ -110,6 +127,9 @@ class ProjectState:
             "feedback_history": self.feedback_history,
             "cache_id": self.cache_id,
             "cache_stats": self.cache_stats,
+            "processing_strategy": self.processing_strategy,
+            "token_stats": self.token_stats,
+            "cache_lifecycle": self.cache_lifecycle,
             "github_repo_url": self.github_repo_url,
             "github_branch": self.github_branch,
             "github_file_count": self.github_file_count,
@@ -138,7 +158,6 @@ class ProjectState:
             config=data.get("config", {}),
             cost_report=data.get("cost_report", {}),
             deferred_sections=data.get("deferred_sections", []),
-            rag_coverage=data.get("rag_coverage", {}),
             quality_reports=data.get("quality_reports", {}),
             factcheck_reports=data.get("factcheck_reports", {}),
             glossary=data.get("glossary", {}),
@@ -147,6 +166,22 @@ class ProjectState:
             feedback_history=data.get("feedback_history", []),
             cache_id=data.get("cache_id"),
             cache_stats=data.get("cache_stats", {}),
+            processing_strategy=data.get("processing_strategy", "standard"),
+            token_stats=data.get("token_stats", {
+                "total_input_corpus": 0,
+                "estimated_output": 0,
+                "strategy_trigger": None,
+                "compression_applied": False,
+                "compression_ratio": None,
+            }),
+            cache_lifecycle=data.get("cache_lifecycle", {
+                "cache_name": None,
+                "created_at": None,
+                "expires_at": None,
+                "last_renewed_at": None,
+                "renewal_count": 0,
+                "deleted_at": None,
+            }),
             github_repo_url=data.get("github_repo_url"),
             github_branch=data.get("github_branch"),
             github_file_count=data.get("github_file_count", 0),
@@ -337,7 +372,7 @@ class Orchestrator:
     """Orchestre le pipeline de génération séquentielle.
 
     Phase 2 : supporte le mode agentique, les passes multiples,
-    le mode batch, et le RAG via ChromaDB.
+    le mode batch et le contexte Full Context natif (v4.0).
     """
 
     def __init__(
@@ -361,7 +396,7 @@ class Orchestrator:
             persistent_instructions=self.config.get("persistent_instructions", ""),
             anti_hallucination_enabled=self.config.get("anti_hallucination_enabled", True),
         )
-        self.rag_engine = None
+        self.context_manager = None  # v4.0 : ContextManager (remplace rag_engine)
         self.conditional_generator = None
         self.state: Optional[ProjectState] = None
         self._metadata_store = None  # Phase 2.5 : MetadataStore SQLite
@@ -401,7 +436,7 @@ class Orchestrator:
             fc_config = self.config.get("factcheck", {})
             self._factcheck_engine = FactcheckEngine(
                 provider=self.provider,
-                rag_engine=self.rag_engine,
+                rag_engine=None,
                 project_dir=self.project_dir,
                 enabled=fc_config.get("enabled", True),
                 auto_correct_threshold=fc_config.get("auto_correct_threshold", 80.0),
@@ -490,37 +525,10 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Initialisation Phase 3 échouée : {e}")
 
-    def _is_rag_enabled(self) -> bool:
-        """Phase 8 (Kill Switch) : vérifie si le RAG est activé dans la config."""
-        return self.config.get("rag", {}).get("enabled", True)
-
-    def _init_rag(self) -> None:
-        """Initialise le moteur RAG si nécessaire.
-
-        Phase 8 (Kill Switch) : si ``rag.enabled`` est ``false``, aucun import
-        de ChromaDB/sentence-transformers n'est effectué. Les métadonnées
-        (titre, auteur, année) sont néanmoins extraites et stockées dans
-        SQLite pour le citation_engine.
-        """
-        if self.rag_engine is not None:
-            return
-        if not self._is_rag_enabled():
-            logger.info("RAG désactivé (rag.enabled=false). ChromaDB non chargé.")
-            return
-        try:
-            import chromadb  # noqa: F401 – check availability before creating engine
-            from src.core.rag_engine import RAGEngine
-            persist_dir = self.project_dir / "chromadb"
-            ensure_dir(persist_dir)
-            logger.info(f"Initialisation ChromaDB — répertoire de persistance : {persist_dir}")
-            self.rag_engine = RAGEngine(
-                persist_dir=persist_dir,
-                top_k=self.config.get("rag", {}).get("top_k", self.config.get("rag_top_k", 10)),
-                relevance_threshold=self.config.get("rag", {}).get("relevance_threshold", self.config.get("rag_relevance_threshold", 0.3)),
-                config=self.config,  # Phase 2.5 : transmet toute la config
-            )
-        except ImportError:
-            logger.warning("ChromaDB non disponible, RAG désactivé")
+    def _init_strategy_selector(self):
+        """v4.0 : Initialise le StrategySelector."""
+        from src.core.strategy_selector import StrategySelector
+        return StrategySelector(self.config)
 
     def _init_conditional_generator(self) -> None:
         """Initialise le générateur conditionnel si nécessaire."""
@@ -666,206 +674,72 @@ class Orchestrator:
         self.save_state()
         return self.state
 
-    def index_corpus_rag(self) -> int:
-        """Indexe le corpus dans ChromaDB avec chunking sémantique (Phase 2.5).
+    def prepare_corpus_context(self) -> int:
+        """v4.0 : Prépare le contexte corpus (Full Context natif).
 
-        Phase 8 (Kill Switch) : si ``rag.enabled`` est ``false``, seules les
-        métadonnées (titre, auteur, année) sont extraites et stockées dans
-        SQLite. Aucun import de ChromaDB ni d'embeddings n'a lieu.
-
-        Utilise le pipeline : ExtractionResult → semantic_chunker → index_corpus_semantic.
-        Fallback sur l'ancien index_corpus() si semantic_chunker échoue.
+        Remplace index_corpus_rag(). Calcule les tokens du corpus,
+        sélectionne la stratégie, et extrait les métadonnées.
 
         Returns:
-            Nombre de blocs indexés (0 si RAG désactivé).
-        """
-        # Phase 8 : si RAG désactivé, extraire uniquement les métadonnées
-        if not self._is_rag_enabled():
-            return self._index_metadata_only()
-
-        self._init_rag()
-        if not self.rag_engine or not self.state or not self.state.corpus:
-            return 0
-
-        # Phase 2.5 : tenter le chunking sémantique
-        use_semantic = self.config.get("rag", {}).get("chunking", {}).get("strategy", "semantic") == "semantic"
-
-        if use_semantic:
-            try:
-                from src.core.semantic_chunker import chunk_document
-                from src.core.metadata_store import MetadataStore, DocumentMetadata
-
-                # Initialiser le MetadataStore SQLite
-                metadata_store = MetadataStore(str(self.project_dir))
-
-                # Paramètres de chunking depuis la config
-                chunking_config = self.config.get("rag", {}).get("chunking", {})
-                max_chunk_tokens = chunking_config.get("max_chunk_tokens", 800)
-                min_chunk_tokens = chunking_config.get("min_chunk_tokens", 100)
-                overlap_sentences = chunking_config.get("overlap_sentences", 2)
-
-                chunks_by_doc = {}
-
-                # Phase 3 : instancier le client GROBID si activé
-                grobid_client = None
-                grobid_config = self.config.get("grobid", {})
-                if grobid_config.get("enabled", False):
-                    try:
-                        from src.core.grobid_client import GrobidClient
-                        grobid_client = GrobidClient(
-                            server_url=grobid_config.get("server_url", "http://localhost:8070"),
-                            enabled=True,
-                        )
-                        if not grobid_client.is_available():
-                            logger.warning("GROBID activé mais serveur inaccessible, désactivation")
-                            grobid_client = None
-                    except ImportError:
-                        logger.warning("Module grobid_client non disponible")
-
-                # Phase 2 Sprint 2 : déterminer si le fallback LLM est actif
-                use_llm_fallback = grobid_config.get("fallback_llm", True) and grobid_client is None
-                llm_model_for_meta = grobid_config.get("llm_model", "gpt-4o-mini")
-
-                for ext in self.state.corpus.extractions:
-                    doc_id = ext.hash_binary if ext.hash_binary else f"{ext.source_filename}_{hash(ext.text[:50])}"
-
-                    # Phase 3 : enrichir les métadonnées via GROBID pour les PDFs
-                    if grobid_client and ext.source_filename.lower().endswith(".pdf"):
-                        try:
-                            # Rechercher le fichier PDF dans le corpus
-                            pdf_path = None
-                            corpus_dir = self.project_dir / "corpus"
-                            if corpus_dir.exists():
-                                candidates = list(corpus_dir.rglob(ext.source_filename))
-                                if candidates:
-                                    pdf_path = candidates[0]
-                            if pdf_path:
-                                grobid_meta = grobid_client.process_header(pdf_path)
-                                if grobid_meta:
-                                    # Fusionner les métadonnées GROBID (elles prennent priorité)
-                                    ext.metadata.update(grobid_meta)
-                                    logger.info(f"GROBID : métadonnées enrichies pour {ext.source_filename}")
-                        except Exception as e:
-                            logger.warning(f"GROBID : erreur pour {ext.source_filename}: {e}")
-
-                    # Phase 2 Sprint 2 : fallback LLM pour les métadonnées si GROBID absent
-                    elif use_llm_fallback and ext.source_filename.lower().endswith(".pdf"):
-                        try:
-                            llm_meta = _extract_metadata_via_llm(
-                                ext, self.project_dir, self.provider, llm_model_for_meta,
-                            )
-                            if llm_meta:
-                                ext.metadata.update(llm_meta)
-                                logger.info(f"LLM fallback : métadonnées extraites pour {ext.source_filename}")
-                        except Exception as e:
-                            logger.warning(f"LLM fallback métadonnées : erreur pour {ext.source_filename}: {e}")
-
-                    # Extraire auteurs et année depuis les métadonnées
-                    authors = None
-                    year = None
-                    if ext.metadata:
-                        authors = ext.metadata.get("author") or ext.metadata.get("authors")
-                        # Tenter d'extraire l'année depuis les métadonnées ou le nom de fichier
-                        date_str = ext.metadata.get("creation_date") or ext.metadata.get("date")
-                        if date_str:
-                            import re as _re
-                            year_match = _re.search(r'(19|20)\d{2}', str(date_str))
-                            if year_match:
-                                year = int(year_match.group())
-
-                    # Construire la référence APA si possible
-                    title = ext.metadata.get("title") if ext.metadata else None
-                    apa_reference = None
-                    if authors and year:
-                        apa_reference = f"{authors} ({year})"
-                    elif authors and title:
-                        apa_reference = f"{authors} — {title}"
-
-                    # Enregistrer le document dans SQLite
-                    doc_meta = DocumentMetadata(
-                        doc_id=doc_id,
-                        filepath=str(ext.source_filename),
-                        filename=ext.source_filename,
-                        title=title,
-                        authors=json.dumps([authors]) if authors else None,
-                        year=year,
-                        apa_reference=apa_reference,
-                        page_count=ext.page_count,
-                        token_count=count_tokens(ext.text) if ext.text else ext.word_count,
-                        char_count=ext.char_count,
-                        word_count=ext.word_count,
-                        extraction_method=ext.extraction_method,
-                        extraction_status=ext.status,
-                        hash_binary=ext.hash_binary,
-                        hash_textual=ext.hash_text,
-                    )
-                    metadata_store.add_document(doc_meta)
-
-                    # Chunking sémantique
-                    chunks = chunk_document(
-                        ext,
-                        doc_id=doc_id,
-                        max_chunk_tokens=max_chunk_tokens,
-                        min_chunk_tokens=min_chunk_tokens,
-                        overlap_sentences=overlap_sentences,
-                    )
-                    if chunks:
-                        chunks_by_doc[doc_id] = chunks
-
-                if chunks_by_doc:
-                    count = self.rag_engine.index_corpus_semantic(chunks_by_doc, metadata_store)
-                    persist_dir = self.project_dir / "chromadb"
-                    logger.info(
-                        f"Corpus indexé (sémantique) : {count} blocs dans {persist_dir}, "
-                        f"métadonnées dans {metadata_store.db_path}"
-                    )
-                    self.activity_log.info(f"Corpus indexé (sémantique) : {count} blocs")
-                    # Stocker metadata_store pour réutilisation (plan_corpus_linker, etc.)
-                    self._metadata_store = metadata_store
-                    # Phase 3: update citation engine with metadata store
-                    if self._citation_engine:
-                        self._citation_engine.metadata_store = metadata_store
-                    return count
-
-            except (ImportError, ValueError, RuntimeError, OSError) as e:
-                logger.warning(f"Chunking sémantique échoué, fallback chunking fixe : {e}")
-
-        # Fallback : ancien chunking fixe (Phase 2)
-        extractions = []
-        for ext in self.state.corpus.extractions:
-            extractions.append({
-                "text": ext.text,
-                "source_file": ext.source_filename,
-                "page_count": ext.page_count,
-                "metadata": ext.metadata,
-            })
-
-        count = self.rag_engine.index_corpus(extractions)
-        self.activity_log.info(f"Corpus indexé dans ChromaDB : {count} blocs")
-        return count
-
-    def _index_metadata_only(self) -> int:
-        """Phase 8 (Kill Switch) : extrait les métadonnées sans charger ChromaDB.
-
-        Peuple le MetadataStore SQLite (titre, auteur, année, etc.) requis
-        par le citation_engine, sans importer chromadb, sentence-transformers
-        ou fastembed.
-
-        Returns:
-            0 (aucun bloc vectoriel indexé).
+            Nombre total de tokens du corpus.
         """
         if not self.state or not self.state.corpus:
             return 0
+
+        from src.core.strategy_selector import StrategySelector
+
+        # 1. Compter les tokens du corpus
+        total_tokens = sum(
+            count_tokens(getattr(chunk, "text", ""))
+            for chunk in self.state.corpus.chunks
+        )
+        self.state.token_stats["total_input_corpus"] = total_tokens
+
+        # 2. Sélectionner la stratégie (Input Check)
+        selector = StrategySelector(self.config)
+        strategy = selector.select_strategy(total_tokens)
+        self.state.processing_strategy = strategy.value
+
+        report = selector.get_strategy_report()
+        trigger = report.get("reason")
+        if trigger:
+            self.state.token_stats["strategy_trigger"] = trigger
+
+        logger.info(
+            f"[v4.0] Corpus : {total_tokens} tokens → stratégie : {strategy.value}"
+        )
+        self.activity_log.info(
+            f"Corpus préparé (Full Context) : {total_tokens} tokens, "
+            f"stratégie : {strategy.value}"
+        )
+
+        # 3. Extraire les métadonnées pour le citation_engine
+        self._extract_metadata()
+
+        self.save_state()
+        return total_tokens
+
+    # Keep backward compatibility alias
+    def index_corpus_rag(self) -> int:
+        """Alias de rétrocompatibilité pour prepare_corpus_context."""
+        return self.prepare_corpus_context()
+
+    def _extract_metadata(self) -> None:
+        """Extrait les métadonnées bibliographiques pour le citation_engine.
+
+        Peuple le MetadataStore SQLite (titre, auteur, année, etc.).
+        """
+        if not self.state or not self.state.corpus:
+            return
 
         try:
             from src.core.metadata_store import MetadataStore, DocumentMetadata
         except ImportError:
             logger.warning("MetadataStore non disponible, skip extraction métadonnées")
-            return 0
+            return
 
         metadata_store = MetadataStore(str(self.project_dir))
 
-        # Phase 2 Sprint 2 : fallback LLM pour les métadonnées si GROBID absent
         grobid_config = self.config.get("grobid", {})
         use_llm_fallback = grobid_config.get("fallback_llm", True) and not grobid_config.get("enabled", False)
         llm_model_for_meta = grobid_config.get("llm_model", "gpt-4o-mini")
@@ -877,7 +751,6 @@ class Orchestrator:
                 else f"{ext.source_filename}_{hash(ext.text[:50])}"
             )
 
-            # Enrichir via LLM si PDF et GROBID absent
             if use_llm_fallback and ext.source_filename.lower().endswith(".pdf"):
                 try:
                     llm_meta = _extract_metadata_via_llm(
@@ -885,7 +758,6 @@ class Orchestrator:
                     )
                     if llm_meta:
                         ext.metadata.update(llm_meta)
-                        logger.info(f"LLM fallback : métadonnées extraites pour {ext.source_filename}")
                 except Exception as e:
                     logger.warning(f"LLM fallback métadonnées : erreur pour {ext.source_filename}: {e}")
 
@@ -930,13 +802,6 @@ class Orchestrator:
         if self._citation_engine:
             self._citation_engine.metadata_store = metadata_store
 
-        logger.info(
-            f"RAG désactivé — métadonnées extraites pour "
-            f"{len(self.state.corpus.extractions)} document(s)"
-        )
-        self.activity_log.info("Métadonnées corpus extraites (RAG désactivé)")
-        return 0
-
     def generate_all_sections(self, pass_number: int = 1, progress_callback=None) -> dict:
         """Génère toutes les sections du plan séquentiellement.
 
@@ -972,15 +837,12 @@ class Orchestrator:
         # Initialize Phase 3 engines before generation (must happen before building system prompt)
         self._ensure_phase3_engine()
 
-        # Initialiser RAG et génération conditionnelle si corpus disponible
-        # Also check for persisted ChromaDB data (corpus may be None after state reload)
-        has_persisted_rag = (self.project_dir / "chromadb").exists()
-        if self.state.corpus or has_persisted_rag:
-            self._init_rag()
-            self._init_conditional_generator()
-            if self.state.corpus and self.rag_engine and self.rag_engine.indexed_count == 0:
-                self.index_corpus_rag()
-        use_rag = self.rag_engine is not None and self.rag_engine.indexed_count > 0
+        # v4.0 : Préparer le contexte corpus (Full Context natif)
+        corpus_text = ""
+        if self.state.corpus:
+            from src.core.context_manager import ContextManager
+            corpus_text = ContextManager._format_corpus_xml(self.state.corpus)
+        has_corpus = bool(corpus_text)
 
         # Phase 3: Auto-generate glossary before first generation
         if (
@@ -1023,38 +885,16 @@ class Orchestrator:
                 section=section.id,
             )
 
-            # Récupérer les chunks de corpus (RAG ou fallback simple)
+            # v4.0 : Full Context — le corpus complet est accessible
             corpus_chunks = []
             extra_instruction = ""
-            if use_rag:
-                rag_result = self.rag_engine.search_for_section(
-                    section.id, section.title, section.description or ""
-                )
-                corpus_chunks = rag_result.chunks
-
-                # Évaluation de la couverture conditionnelle
-                if self.conditional_generator and not is_refinement:
-                    assessment = self.conditional_generator.assess_coverage(rag_result)
-                    self.state.rag_coverage[section.id] = assessment.to_dict()
-
-                    if not assessment.should_generate:
-                        section.status = "deferred"
-                        if section.id not in self.state.deferred_sections:
-                            self.state.deferred_sections.append(section.id)
-                        self.activity_log.warning(assessment.message, section=section.id)
-                        self.save_state()
-                        continue
-
-                    if assessment.extra_prompt_instruction:
-                        extra_instruction = assessment.extra_prompt_instruction
-                        self.activity_log.warning(assessment.message, section=section.id)
-            elif self.state.corpus:
+            if has_corpus and self.state.corpus:
                 corpus_chunks = self.state.corpus.get_chunks_for_section(section.title)
 
             # Build per-section system prompt (with section_id for hierarchical
             # instructions and has_corpus to control anti-hallucination block)
             system_prompt = self.prompt_engine.build_system_prompt(
-                has_corpus=bool(corpus_chunks),
+                has_corpus=has_corpus,
                 section_id=section.id,
             )
 
@@ -1595,50 +1435,9 @@ class Orchestrator:
         # Ensure Phase 3 PromptEngine is initialized (glossary, personas, etc.)
         self._ensure_phase3_engine()
 
-        # Phase 2.5 : tenter la liaison plan-corpus si le RAG est indexé
-        plan_corpus_enabled = self.config.get("plan_corpus_linking", {}).get("enabled", True)
-        use_plan_corpus = (
-            plan_corpus_enabled
-            and self._metadata_store is not None
-            and self.rag_engine is not None
-        )
-
-        if use_plan_corpus:
-            try:
-                from src.core.plan_corpus_linker import (
-                    link_plan_to_corpus,
-                    format_plan_context_for_prompt,
-                    PLAN_PROMPT_WITH_CORPUS,
-                )
-
-                plan_context = link_plan_to_corpus(
-                    objective=objective,
-                    metadata_store=self._metadata_store,
-                    collection=self.rag_engine.collection,
-                    config=self.config,
-                    provider=self.provider,
-                )
-
-                corpus_context = format_plan_context_for_prompt(plan_context)
-                prompt = PLAN_PROMPT_WITH_CORPUS.format(
-                    objective=objective,
-                    corpus_context=corpus_context,
-                    target_pages=target_pages or "automatique",
-                )
-
-                # Stocker le plan_context pour l'affichage UI
-                self._last_plan_context = plan_context
-
-                logger.info(
-                    f"Plan-corpus linker : {len(plan_context.themes)} thèmes, "
-                    f"{len(plan_context.coverage)} scores de couverture"
-                )
-
-            except Exception as e:
-                logger.warning(f"Plan-corpus linker échoué, fallback digest : {e}")
-                use_plan_corpus = False
-
-        if not use_plan_corpus:
+        # v4.0 : corpus digest pour la génération de plan (Full Context)
+        use_plan_corpus = False
+        if True:
             # Fallback : ancien mécanisme (corpus digest textuel)
             corpus_digest = corpus.get_corpus_digest() if corpus else None
             prompt = self.prompt_engine.build_plan_generation_prompt(

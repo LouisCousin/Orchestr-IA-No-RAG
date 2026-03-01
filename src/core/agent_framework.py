@@ -2,6 +2,7 @@
 
 Phase 7 : dataclasses de base (AgentMessage, AgentResult, AgentState),
            classe abstraite BaseAgent dont héritent les 5 agents spécialisés.
+v4.0 : AgentContextPayload pour le mode Full Context natif.
 """
 
 import asyncio
@@ -272,6 +273,7 @@ class AgentConfig:
 
     enabled: bool = False
     max_parallel_writers: int = 4
+    max_parallel_writers_cache_mode: int = 8  # v4.0 : parallélisme renforcé en mode cache
     max_parallel_verifiers: int = 4
     quality_threshold: float = 3.5
     section_correction_threshold: float = 3.0
@@ -287,6 +289,7 @@ class AgentConfig:
         return cls(
             enabled=ma.get("enabled", False),
             max_parallel_writers=ma.get("max_parallel_writers", 4),
+            max_parallel_writers_cache_mode=ma.get("max_parallel_writers_cache_mode", 8),
             max_parallel_verifiers=ma.get("max_parallel_verifiers", 4),
             quality_threshold=ma.get("quality_threshold", 3.5),
             section_correction_threshold=ma.get("section_correction_threshold", 3.0),
